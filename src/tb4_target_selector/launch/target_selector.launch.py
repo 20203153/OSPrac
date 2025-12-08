@@ -31,12 +31,6 @@ def generate_launch_description():
         description="RGB image topic for YOLO node (OAK-D: /oakd/rgb/image_raw)",
     )
 
-    declare_depth_topic = DeclareLaunchArgument(
-        "depth_topic",
-        default_value="/oakd/rgb/preview/image_raw",
-        description="Depth image topic for YOLO node (OAK-D: /oakd/depth/image_raw)",
-    )
-
     declare_camera_info_topic = DeclareLaunchArgument(
         "camera_info_topic",
         default_value="/oakd/rgb/preview/camera_info",
@@ -70,7 +64,6 @@ def generate_launch_description():
         [
             declare_model_path,
             declare_rgb_topic,
-            declare_depth_topic,
             declare_camera_info_topic,
             cv2_node,
             yolo_node,

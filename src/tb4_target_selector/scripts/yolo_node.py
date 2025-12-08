@@ -18,37 +18,18 @@ from __future__ import annotations
 import math
 from typing import List, Optional
 
-import numpy as np
 import cv2
 from ultralytics import YOLO
 
 import rclpy
 from rclpy.node import Node
-from rclpy.duration import Duration
 
-from sensor_msgs.msg import Image, CameraInfo
+from sensor_msgs.msg import Image
 from geometry_msgs.msg import Point
-
-from tf2_ros import (
-    Buffer,
-    TransformListener,
-    LookupException,
-    ConnectivityException,
-    ExtrapolationException,
-)
-import tf_transformations
 
 from cv_bridge import CvBridge, CvBridgeError
 
 from tb4_target_selector.srv import BoxQuery
-
-
-class CameraIntrinsics:
-    def __init__(self, fx: float, fy: float, cx: float, cy: float) -> None:
-        self.fx = fx
-        self.fy = fy
-        self.cx = cx
-        self.cy = cy
 
 
 class YoloNode(Node):
@@ -58,8 +39,11 @@ class YoloNode(Node):
         # Parameters ---------------------------------------------------------
         self.declare_parameter("model_path", "/path/to/yolov5n_custom.pt")
         # TurtleBot4 OAK-D 기본 토픽 이름에 맞춘 기본값
+        #  - RGB:  /oakd/rgb/preview/image_raw (또는 /oakd/rgb/image_raw)
+        #  - Depth: (옵션) /oakd/depth/image_raw
+        #          빈 문자열("")이면 depth 사용 안 함 → 항상 base_link + assumed_distance 로 fallback
         self.declare_parameter("rgb_topic", "/oakd/rgb/preview/image_raw")
-        self.declare_parameter("depth_topic", "/oakd/rgb/preview/image_raw")
+        self.declare_parameter("depth_topic", "")
         self.declare_parameter("camera_info_topic", "/oakd/rgb/camera_info")
         self.declare_parameter("target_classes", ["box"])
         self.declare_parameter("yolo_conf_threshold", 0.4)
@@ -79,6 +63,10 @@ class YoloNode(Node):
         self.depth_topic = (
             self.get_parameter("depth_topic").get_parameter_value().string_value
         )
+        # depth_topic 이 비어 있으면 depth/카메라정보를 사용하지 않고,
+        # 항상 base_link 기준 assumed_distance_m 로만 타겟 포인트를 생성한다.
+        self.use_depth: bool = bool(self.depth_topic)
+
         self.camera_info_topic = (
             self.get_parameter("camera_info_topic")
             .get_parameter_value()
@@ -131,14 +119,7 @@ class YoloNode(Node):
         # 클래스 이름 캐시 (dict 또는 list)
         self.class_names = self.model.names
 
-        # TF / camera / depth state ------------------------------------------
-        self.tf_buffer = Buffer()
-        self.tf_listener = TransformListener(self.tf_buffer, self)
-
         self.bridge = CvBridge()
-
-        self.intrinsics: Optional[CameraIntrinsics] = None
-        self.latest_depth: Optional[np.ndarray] = None
 
         # Service client -----------------------------------------------------
         self.box_query_client = self.create_client(BoxQuery, self.service_name)
@@ -160,56 +141,42 @@ class YoloNode(Node):
             self.rgb_callback,
             10,
         )
-        self.depth_sub = self.create_subscription(
-            Image,
-            self.depth_topic,
-            self.depth_callback,
-            10,
-        )
-        self.camera_info_sub = self.create_subscription(
-            CameraInfo,
-            self.camera_info_topic,
-            self.camera_info_callback,
-            10,
-        )
+        # depth 사용 여부에 따라 depth/camera_info 구독 결정
+        if self.use_depth:
+            self.depth_sub = self.create_subscription(
+                Image,
+                self.depth_topic,
+                self.depth_callback,
+                10,
+            )
+            self.camera_info_sub = self.create_subscription(
+                CameraInfo,
+                self.camera_info_topic,
+                self.camera_info_callback,
+                10,
+            )
+        else:
+            self.depth_sub = None
+            self.camera_info_sub = None
+            self.get_logger().info(
+                "Depth is disabled (depth_topic is empty). "
+                "Target point will always be generated in base_link "
+                f"at assumed_distance_m={self.assumed_distance_m}."
+            )
 
         self.get_logger().info(
             "YoloNode initialized:\n"
             f"  model_path={model_path}\n"
             f"  rgb_topic={self.rgb_topic}\n"
-            f"  depth_topic={self.depth_topic}\n"
-            f"  camera_info_topic={self.camera_info_topic}\n"
             f"  target_classes={self.target_classes}\n"
             f"  yolo_conf_threshold={self.yolo_conf_threshold}\n"
-            f"  map_frame={self.map_frame}, base_frame={self.base_frame}, "
-            f"camera_frame={self.camera_frame}\n"
+            f"  base_frame={self.base_frame}\n"
             f"  service_name={self.service_name}"
         )
 
     # ------------------------------------------------------------------
     # Callbacks
     # ------------------------------------------------------------------
-
-    def camera_info_callback(self, msg: CameraInfo) -> None:
-        if len(msg.k) >= 9:
-            fx = msg.k[0]
-            fy = msg.k[4]
-            cx = msg.k[2]
-            cy = msg.k[5]
-            self.intrinsics = CameraIntrinsics(fx=fx, fy=fy, cx=cx, cy=cy)
-
-    def depth_callback(self, msg: Image) -> None:
-        try:
-            depth = self.bridge.imgmsg_to_cv2(msg, desired_encoding="32FC1")
-        except CvBridgeError:
-            try:
-                depth_raw = self.bridge.imgmsg_to_cv2(msg, desired_encoding="16UC1")
-                depth = depth_raw.astype(np.float32) / 1000.0
-            except CvBridgeError as e:
-                self.get_logger().error(f"Depth cv_bridge error: {e}")
-                return
-
-        self.latest_depth = depth
 
     def rgb_callback(self, msg: Image) -> None:
         # Debounce
@@ -287,22 +254,12 @@ class YoloNode(Node):
             conf=conf,
         )
 
-        header_frame_id = self.map_frame
+        header_frame_id = self.base_frame
         target_point = Point()
-
-        # Try map-frame target using depth + TF
-        success = self._estimate_target_point_map(
-            u=u,
-            v=v,
-            stamp=msg.header.stamp,
-            out_point=target_point,
-        )
-        if not success:
-            # Fallback: base_link frame, fixed distance in front
-            header_frame_id = self.base_frame
-            target_point.x = self.assumed_distance_m
-            target_point.y = 0.0
-            target_point.z = 0.0
+        # Depth/TF를 사용하지 않고 항상 base_link 기준 고정 거리로 타겟 포인트 생성
+        target_point.x = self.assumed_distance_m
+        target_point.y = 0.0
+        target_point.z = 0.0
 
         # Prepare service request
         req = BoxQuery.Request()
@@ -363,70 +320,6 @@ class YoloNode(Node):
         debug_msg.header = header
         self.debug_pub.publish(debug_msg)
 
-    def _estimate_target_point_map(
-        self,
-        u: float,
-        v: float,
-        stamp,
-        out_point: Point,
-    ) -> bool:
-        """Estimate a 3D point in map frame from pixel (u, v) using depth + TF."""
-        if self.latest_depth is None or self.intrinsics is None:
-            return False
-
-        depth = self.latest_depth
-        h, w = depth.shape[:2]
-        u_i = int(round(u))
-        v_i = int(round(v))
-        if not (0 <= u_i < w and 0 <= v_i < h):
-            return False
-
-        z = float(depth[v_i, u_i])
-        if not np.isfinite(z) or z <= 0.0:
-            patch = depth[
-                max(0, v_i - 2) : min(h, v_i + 3),
-                max(0, u_i - 2) : min(w, u_i + 3),
-            ]
-            valid = patch[np.isfinite(patch) & (patch > 0.0)]
-            if valid.size == 0:
-                return False
-            z = float(np.median(valid))
-
-        intr = self.intrinsics
-        X_cam = (u - intr.cx) * z / intr.fx
-        Y_cam = (v - intr.cy) * z / intr.fy
-        Z_cam = z
-
-        try:
-            transform = self.tf_buffer.lookup_transform(
-                self.map_frame,
-                self.camera_frame,
-                stamp,
-                timeout=Duration(seconds=0.2),
-            )
-        except (LookupException, ConnectivityException, ExtrapolationException) as e:
-            self.get_logger().warn(
-                f"TF lookup failed (map<-{self.camera_frame}) in YOLO node: {e}"
-            )
-            return False
-
-        T = self._transform_to_matrix(transform)
-        p_cam = np.array([X_cam, Y_cam, Z_cam, 1.0], dtype=np.float64)
-        p_map = T @ p_cam
-
-        out_point.x = float(p_map[0])
-        out_point.y = float(p_map[1])
-        out_point.z = float(p_map[2])
-        return True
-
-    def _transform_to_matrix(self, transform) -> np.ndarray:
-        t = transform.transform.translation
-        q = transform.transform.rotation
-        T = tf_transformations.quaternion_matrix([q.x, q.y, q.z, q.w])
-        T[0, 3] = t.x
-        T[1, 3] = t.y
-        T[2, 3] = t.z
-        return T
 
     def _box_query_response_cb(self, future) -> None:
         try:
