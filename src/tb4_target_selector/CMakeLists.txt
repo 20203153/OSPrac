@@ -39,6 +39,7 @@ install(PROGRAMS
 install(DIRECTORY
   msg
   srv
+  launch
   DESTINATION share/${PROJECT_NAME}
 )
 
