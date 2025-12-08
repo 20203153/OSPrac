@@ -367,9 +367,14 @@ class Cv2BoxSelectorNode(Node):
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
         binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=2)
 
-        contours, _ = cv2.findContours(
+        # OpenCV 2/3 vs 4 호환을 위해 반환값 개수에 따라 분기
+        contours_info = cv2.findContours(
             binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
         )
+        if len(contours_info) == 2:
+            contours, _ = contours_info
+        else:
+            _, contours, _ = contours_info
 
         boxes: List[MapBox] = []
         for c in contours:

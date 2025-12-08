@@ -24,22 +24,23 @@ def generate_launch_description():
         description="Path to YOLOv5n custom weights (.pt)",
     )
 
+    # TurtleBot4 OAK-D 기본 토픽에 맞춘 기본값들
     declare_rgb_topic = DeclareLaunchArgument(
         "rgb_topic",
-        default_value="/camera/image_raw",
-        description="RGB image topic for YOLO node",
+        default_value="/oakd/rgb/image_raw",
+        description="RGB image topic for YOLO node (OAK-D: /oakd/rgb/image_raw)",
     )
 
     declare_depth_topic = DeclareLaunchArgument(
         "depth_topic",
-        default_value="/camera/depth/image_raw",
-        description="Depth image topic for YOLO node",
+        default_value="/oakd/depth/image_raw",
+        description="Depth image topic for YOLO node (OAK-D: /oakd/depth/image_raw)",
     )
 
     declare_camera_info_topic = DeclareLaunchArgument(
         "camera_info_topic",
-        default_value="/camera/camera_info",
-        description="CameraInfo topic for YOLO node",
+        default_value="/oakd/rgb/camera_info",
+        description="CameraInfo topic for YOLO node (OAK-D: /oakd/rgb/camera_info)",
     )
 
     yolo_node = Node(
