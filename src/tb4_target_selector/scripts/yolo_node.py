@@ -157,6 +157,13 @@ class YoloNode(Node):
         # Service client -----------------------------------------------------
         self.box_query_client = self.create_client(BoxQuery, self.service_name)
 
+        # Debug image publisher (/selector/debug, bounding box overlay)
+        self.debug_pub = self.create_publisher(
+            Image,
+            "/selector/debug",
+            10,
+        )
+
         # Time-based trigger debouncing
         self.last_trigger_time: Optional[float] = None
 
@@ -270,6 +277,15 @@ class YoloNode(Node):
         u = 0.5 * (x1 + x2)
         v = 0.5 * (y1 + y2)
 
+        # 디버그용: 선택된 바운딩 박스를 그린 이미지를 /selector/debug 로 publish
+        self._publish_debug_image(
+            rgb=rgb,
+            header=msg.header,
+            bbox=(x1, y1, x2, y2),
+            class_name=class_name,
+            conf=conf,
+        )
+
         header_frame_id = self.map_frame
         target_point = Point()
 
@@ -303,6 +319,48 @@ class YoloNode(Node):
     # ------------------------------------------------------------------
     # Helper methods
     # ------------------------------------------------------------------
+
+    def _publish_debug_image(
+        self,
+        rgb,
+        header,
+        bbox,
+        class_name: str,
+        conf: float,
+    ) -> None:
+        """Publish debug image with YOLO bounding box overlay to /selector/debug."""
+        if self.debug_pub is None:
+            return
+
+        x1, y1, x2, y2 = bbox
+        img = rgb.copy()
+
+        # 바운딩 박스 그리기
+        p1 = (int(x1), int(y1))
+        p2 = (int(x2), int(y2))
+        cv2.rectangle(img, p1, p2, (0, 255, 0), 2)
+
+        # 라벨 텍스트 (클래스 + confidence)
+        label = f"{class_name} {conf:.2f}"
+        cv2.putText(
+            img,
+            label,
+            (p1[0], max(0, p1[1] - 5)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (0, 255, 0),
+            1,
+            cv2.LINE_AA,
+        )
+
+        try:
+            debug_msg = self.bridge.cv2_to_imgmsg(img, encoding="bgr8")
+        except CvBridgeError as e:
+            self.get_logger().warn(f"Failed to convert debug image: {e}")
+            return
+
+        debug_msg.header = header
+        self.debug_pub.publish(debug_msg)
 
     def _estimate_target_point_map(
         self,
