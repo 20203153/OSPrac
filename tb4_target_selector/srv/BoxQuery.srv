@@ -1,0 +1,11 @@
+# Request: YOLO node -> CV2 node
+# target_point is expressed in header.frame_id (e.g. "map" or "base_link")
+std_msgs/Header header
+geometry_msgs/Point target_point
+string target_class
+float32 confidence
+---
+# Response: CV2 node -> YOLO node (or upper-level decision node)
+# candidates are sorted by descending score
+std_msgs/Header header
+BoxCandidate[] candidates

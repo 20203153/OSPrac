@@ -1,0 +1,3 @@
+std_msgs/Header header
+BoxCandidate best_candidate
+bool valid

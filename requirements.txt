@@ -1,0 +1,21 @@
+# Core deep learning stack (for YOLOv5/YOLOv8)
+torch>=2.0.0
+torchvision>=0.15.0
+
+# YOLOv8 (ultralytics) - 학습 및 추론용
+ultralytics>=8.0.0
+
+# 이미지/수치 처리
+opencv-python>=4.8.0
+numpy>=1.24.0
+pillow>=9.0.0
+scipy>=1.10.0
+
+# 유틸리티
+matplotlib>=3.7.0
+PyYAML>=6.0.0
+tqdm>=4.65.0
+
+# 주의:
+# - ROS2 Jazzy 관련 파이썬 패키지(rclpy, sensor_msgs, geometry_msgs, cv_bridge 등)는
+#   일반적으로 apt로 설치되며, pip requirements 에는 포함하지 않는다.
