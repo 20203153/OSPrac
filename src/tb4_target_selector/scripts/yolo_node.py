@@ -158,11 +158,7 @@ class YoloNode(Node):
         ):
             return
 
-        if not self.box_query_client.service_is_ready():
-            # Try once to wait for service
-            if not self.box_query_client.wait_for_service(timeout_sec=0.1):
-                return
-
+        # BoxQuery 서비스 유무와 관계없이 YOLO 추론 및 /selector/debug publish 는 항상 수행
         try:
             rgb = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
         except CvBridgeError as e:
@@ -240,8 +236,15 @@ class YoloNode(Node):
         req.target_class = class_name
         req.confidence = float(conf)
 
-        future = self.box_query_client.call_async(req)
-        future.add_done_callback(self._box_query_response_cb)
+        # BoxQuery 서비스가 준비된 경우에만 호출
+        if self.box_query_client.service_is_ready():
+            future = self.box_query_client.call_async(req)
+            future.add_done_callback(self._box_query_response_cb)
+        else:
+            self.get_logger().warn(
+                "BoxQuery service not available; skipping /box_query call. "
+                "YOLO and /selector/debug are still running."
+            )
 
         self.last_trigger_time = now_sec
 
