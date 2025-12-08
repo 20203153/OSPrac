@@ -19,7 +19,7 @@ import math
 from typing import List, Optional
 
 import cv2
-from ultralytics import YOLO
+import torch
 
 import rclpy
 from rclpy.node import Node
@@ -98,14 +98,19 @@ class YoloNode(Node):
             .double_value
         )
 
-        # Load YOLOv8 model (CPU/GPU as available)
-        self.get_logger().info(f"Loading YOLO model from: {model_path}")
+        # Load YOLOv5n model via torch.hub (CPU/GPU as available)
+        self.get_logger().info(f"Loading YOLOv5n model from: {model_path}")
         try:
-            # ultralytics YOLO v8 (yolov8n, yolov8n-seg 등) 로드
-            self.model = YOLO(model_path)
+            self.model = torch.hub.load(
+                "ultralytics/yolov5",
+                "custom",
+                path=model_path,
+                source="github",  # change to 'local' if using a local clone
+            )
+            self.model.eval()
         except Exception as e:
             self.get_logger().error(
-                f"Failed to load YOLOv8 model from '{model_path}': {e}"
+                f"Failed to load YOLOv5n model from '{model_path}': {e}"
             )
             raise
 
@@ -165,22 +170,13 @@ class YoloNode(Node):
             self.get_logger().error(f"RGB cv_bridge error: {e}")
             return
 
-        # YOLOv8 inference (detect/segment 공통, yolov8n-seg 포함)
-        # ultralytics YOLO 는 numpy (H, W, 3) BGR 이미지를 직접 받을 수 있다.
-        results = self.model(rgb, verbose=False)
-        if not results:
-            # YOLO 결과가 없어도 현재 프레임을 /selector/debug 로 내보낸다.
-            self._publish_debug_image(
-                rgb=rgb,
-                header=msg.header,
-                bbox=None,
-                class_name="",
-                conf=0.0,
-            )
-            return
+        # YOLOv5 inference (torch.hub, numpy BGR image 가능)
+        results = self.model(rgb)
+        # YOLOv5: results.xyxy[0] -> tensor [x1, y1, x2, y2, conf, cls]
+        boxes = results.xyxy[0]
+        names = self.class_names
 
-        r = results[0]
-        if r.boxes is None or len(r.boxes) == 0:
+        if boxes is None or len(boxes) == 0:
             # detection 이 없어도 디버그용 이미지는 항상 publish
             self._publish_debug_image(
                 rgb=rgb,
@@ -191,20 +187,14 @@ class YoloNode(Node):
             )
             return
 
-        boxes_tensor = r.boxes  # Boxes 객체
-        xyxy = boxes_tensor.xyxy.cpu().numpy()           # (N, 4)
-        confs = boxes_tensor.conf.cpu().numpy()          # (N,)
-        clses = boxes_tensor.cls.cpu().numpy().astype(int)  # (N,)
-
         # 디버깅용: YOLO raw detection 개수 로그
-        self.get_logger().info(f"YOLO raw detections: {len(xyxy)}")
-
-        names = self.class_names
+        self.get_logger().info(f"YOLO raw detections: {len(boxes)}")
 
         # Select best suspicious detection
         best_det = None
         best_conf = 0.0
-        for (x1, y1, x2, y2), conf, cls_id in zip(xyxy, confs, clses):
+        for det in boxes:
+            x1, y1, x2, y2, conf, cls_id = det.tolist()
             conf = float(conf)
             cls_id = int(cls_id)
             if isinstance(names, dict):
