@@ -27,19 +27,19 @@ def generate_launch_description():
     # TurtleBot4 OAK-D 기본 토픽에 맞춘 기본값들
     declare_rgb_topic = DeclareLaunchArgument(
         "rgb_topic",
-        default_value="/oakd/rgb/image_raw",
+        default_value="/oakd/rgb/preview/image_raw",
         description="RGB image topic for YOLO node (OAK-D: /oakd/rgb/image_raw)",
     )
 
     declare_depth_topic = DeclareLaunchArgument(
         "depth_topic",
-        default_value="/oakd/depth/image_raw",
+        default_value="/oakd/rgb/preview/image_raw",
         description="Depth image topic for YOLO node (OAK-D: /oakd/depth/image_raw)",
     )
 
     declare_camera_info_topic = DeclareLaunchArgument(
         "camera_info_topic",
-        default_value="/oakd/rgb/camera_info",
+        default_value="/oakd/rgb/preview/camera_info",
         description="CameraInfo topic for YOLO node (OAK-D: /oakd/rgb/camera_info)",
     )
 

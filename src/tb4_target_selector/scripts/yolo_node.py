@@ -58,10 +58,10 @@ class YoloNode(Node):
         # Parameters ---------------------------------------------------------
         self.declare_parameter("model_path", "/path/to/yolov5n_custom.pt")
         # TurtleBot4 OAK-D 기본 토픽 이름에 맞춘 기본값
-        self.declare_parameter("rgb_topic", "/oakd/rgb/image_raw")
-        self.declare_parameter("depth_topic", "/oakd/depth/image_raw")
+        self.declare_parameter("rgb_topic", "/oakd/rgb/preview/image_raw")
+        self.declare_parameter("depth_topic", "/oakd/rgb/preview/image_raw")
         self.declare_parameter("camera_info_topic", "/oakd/rgb/camera_info")
-        self.declare_parameter("target_classes", ["person", "chair", "box"])
+        self.declare_parameter("target_classes", ["box"])
         self.declare_parameter("yolo_conf_threshold", 0.4)
         self.declare_parameter("service_name", "/box_query")
         self.declare_parameter("map_frame", "map")
