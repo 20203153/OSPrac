@@ -46,7 +46,6 @@ def generate_launch_description():
             {
                 "model_path": model_path,
                 "rgb_topic": rgb_topic,
-                "depth_topic": depth_topic,
                 "camera_info_topic": camera_info_topic,
             }
         ],

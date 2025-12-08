@@ -43,7 +43,6 @@ class YoloNode(Node):
         #  - Depth: (옵션) /oakd/depth/image_raw
         #          빈 문자열("")이면 depth 사용 안 함 → 항상 base_link + assumed_distance 로 fallback
         self.declare_parameter("rgb_topic", "/oakd/rgb/preview/image_raw")
-        self.declare_parameter("depth_topic", "")
         self.declare_parameter("camera_info_topic", "/oakd/rgb/camera_info")
         self.declare_parameter("target_classes", ["box"])
         self.declare_parameter("yolo_conf_threshold", 0.4)
@@ -60,12 +59,6 @@ class YoloNode(Node):
         self.rgb_topic = (
             self.get_parameter("rgb_topic").get_parameter_value().string_value
         )
-        self.depth_topic = (
-            self.get_parameter("depth_topic").get_parameter_value().string_value
-        )
-        # depth_topic 이 비어 있으면 depth/카메라정보를 사용하지 않고,
-        # 항상 base_link 기준 assumed_distance_m 로만 타겟 포인트를 생성한다.
-        self.use_depth: bool = bool(self.depth_topic)
 
         self.camera_info_topic = (
             self.get_parameter("camera_info_topic")
@@ -141,28 +134,6 @@ class YoloNode(Node):
             self.rgb_callback,
             10,
         )
-        # depth 사용 여부에 따라 depth/camera_info 구독 결정
-        if self.use_depth:
-            self.depth_sub = self.create_subscription(
-                Image,
-                self.depth_topic,
-                self.depth_callback,
-                10,
-            )
-            self.camera_info_sub = self.create_subscription(
-                CameraInfo,
-                self.camera_info_topic,
-                self.camera_info_callback,
-                10,
-            )
-        else:
-            self.depth_sub = None
-            self.camera_info_sub = None
-            self.get_logger().info(
-                "Depth is disabled (depth_topic is empty). "
-                "Target point will always be generated in base_link "
-                f"at assumed_distance_m={self.assumed_distance_m}."
-            )
 
         self.get_logger().info(
             "YoloNode initialized:\n"
