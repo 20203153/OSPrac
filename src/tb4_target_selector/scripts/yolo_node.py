@@ -169,10 +169,26 @@ class YoloNode(Node):
         # ultralytics YOLO 는 numpy (H, W, 3) BGR 이미지를 직접 받을 수 있다.
         results = self.model(rgb, verbose=False)
         if not results:
+            # YOLO 결과가 없어도 현재 프레임을 /selector/debug 로 내보낸다.
+            self._publish_debug_image(
+                rgb=rgb,
+                header=msg.header,
+                bbox=None,
+                class_name="",
+                conf=0.0,
+            )
             return
 
         r = results[0]
         if r.boxes is None or len(r.boxes) == 0:
+            # detection 이 없어도 디버그용 이미지는 항상 publish
+            self._publish_debug_image(
+                rgb=rgb,
+                header=msg.header,
+                bbox=None,
+                class_name="",
+                conf=0.0,
+            )
             return
 
         boxes_tensor = r.boxes  # Boxes 객체
@@ -209,6 +225,14 @@ class YoloNode(Node):
                 best_det = (x1, y1, x2, y2, conf, class_name)
 
         if best_det is None:
+            # 필터링 후 남은 박스가 없어도 현재 프레임을 디버그 토픽으로 publish
+            self._publish_debug_image(
+                rgb=rgb,
+                header=msg.header,
+                bbox=None,
+                class_name="",
+                conf=0.0,
+            )
             return
 
         x1, y1, x2, y2, conf, class_name = best_det
@@ -263,30 +287,33 @@ class YoloNode(Node):
         class_name: str,
         conf: float,
     ) -> None:
-        """Publish debug image with YOLO bounding box overlay to /selector/debug."""
+        """Publish debug image (raw or with YOLO bounding box) to /selector/debug."""
         if self.debug_pub is None:
             return
 
-        x1, y1, x2, y2 = bbox
         img = rgb.copy()
 
-        # 바운딩 박스 그리기
-        p1 = (int(x1), int(y1))
-        p2 = (int(x2), int(y2))
-        cv2.rectangle(img, p1, p2, (0, 255, 0), 2)
+        if bbox is not None:
+            x1, y1, x2, y2 = bbox
 
-        # 라벨 텍스트 (클래스 + confidence)
-        label = f"{class_name} {conf:.2f}"
-        cv2.putText(
-            img,
-            label,
-            (p1[0], max(0, p1[1] - 5)),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (0, 255, 0),
-            1,
-            cv2.LINE_AA,
-        )
+            # 바운딩 박스 그리기
+            p1 = (int(x1), int(y1))
+            p2 = (int(x2), int(y2))
+            cv2.rectangle(img, p1, p2, (0, 255, 0), 2)
+
+            # 라벨 텍스트 (클래스 + confidence)
+            label = f"{class_name} {conf:.2f}"
+            cv2.putText(
+                img,
+                label,
+                (p1[0], max(0, p1[1] - 5)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (0, 255, 0),
+                1,
+                cv2.LINE_AA,
+            )
+        # bbox 가 None 이면, 아무 박스도 그리지 않은 raw 이미지 그대로 publish
 
         try:
             debug_msg = self.bridge.cv2_to_imgmsg(img, encoding="bgr8")
