@@ -180,6 +180,9 @@ class YoloNode(Node):
         confs = boxes_tensor.conf.cpu().numpy()          # (N,)
         clses = boxes_tensor.cls.cpu().numpy().astype(int)  # (N,)
 
+        # 디버깅용: YOLO raw detection 개수 로그
+        self.get_logger().info(f"YOLO raw detections: {len(xyxy)}")
+
         names = self.class_names
 
         # Select best suspicious detection
