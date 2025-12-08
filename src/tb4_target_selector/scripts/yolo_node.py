@@ -52,6 +52,8 @@ class YoloNode(Node):
         self.declare_parameter("camera_frame", "camera_link")
         self.declare_parameter("assumed_distance_m", 1.5)
         self.declare_parameter("trigger_cooldown_sec", 1.0)
+        # YOLOv5n 평가 최소 간격(초). 기본 0.5초 → 최대 2Hz
+        self.declare_parameter("yolo_eval_min_interval_sec", 0.5)
 
         model_path = (
             self.get_parameter("model_path").get_parameter_value().string_value
@@ -97,6 +99,11 @@ class YoloNode(Node):
             .get_parameter_value()
             .double_value
         )
+        self.yolo_eval_min_interval_sec: float = (
+            self.get_parameter("yolo_eval_min_interval_sec")
+            .get_parameter_value()
+            .double_value
+        )
 
         # Load YOLOv5n model via torch.hub (CPU/GPU as available)
         self.get_logger().info(f"Loading YOLOv5n model from: {model_path}")
@@ -129,8 +136,10 @@ class YoloNode(Node):
             10,
         )
 
-        # Time-based trigger debouncing
+        # Time-based trigger debouncing (for BoxQuery)
         self.last_trigger_time: Optional[float] = None
+        # YOLOv5n 평가 주기 제한용 타임스탬프
+        self.last_yolo_eval_time: Optional[float] = None
 
         # Subscribers --------------------------------------------------------
         self.rgb_sub = self.create_subscription(
@@ -155,11 +164,12 @@ class YoloNode(Node):
     # ------------------------------------------------------------------
 
     def rgb_callback(self, msg: Image) -> None:
-        # Debounce
         now_sec = self.get_clock().now().nanoseconds * 1e-9
+
+        # YOLOv5n 평가 주기 제한 (최대 1 / yolo_eval_min_interval_sec Hz)
         if (
-            self.last_trigger_time is not None
-            and now_sec - self.last_trigger_time < self.trigger_cooldown_sec
+            self.last_yolo_eval_time is not None
+            and now_sec - self.last_yolo_eval_time < self.yolo_eval_min_interval_sec
         ):
             return
 
@@ -171,6 +181,8 @@ class YoloNode(Node):
             return
 
         # YOLOv5 inference (torch.hub, numpy BGR image 가능)
+        # 평가 간격 제한을 통과한 시점에 타임스탬프 갱신
+        self.last_yolo_eval_time = now_sec
         results = self.model(rgb)
         # YOLOv5: results.xyxy[0] -> tensor [x1, y1, x2, y2, conf, cls]
         boxes = results.xyxy[0]
