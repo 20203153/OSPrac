@@ -19,8 +19,8 @@ import math
 from typing import List, Optional
 
 import numpy as np
-import torch
 import cv2
+from ultralytics import YOLO
 
 import rclpy
 from rclpy.node import Node
@@ -117,33 +117,19 @@ class YoloNode(Node):
             .double_value
         )
 
-        # Load YOLOv5 model (CPU)
-        self.get_logger().info(f"Loading YOLOv5 model from: {model_path}")
-        self.model = torch.hub.load(
-            "ultralytics/yolov5",
-            "custom",
-            path=model_path,
-            source="github",
-        )
-        self.model.eval()
-
-        # Segmentation 모델(yolov5n-seg.pt 등)을 사용하면 AutoShape 미지원으로 인해
-        # self.model(rgb) 호출 시 4D 텐서를 기대하다가 3D로 들어와서
-        # "ValueError: not enough values to unpack (expected 4, got 3)" 가 발생한다.
-        # 이 yolo_node 는 "바운딩 박스 탐지"만 필요하므로, 세그멘테이션 모델은 지원하지 않고
-        # 초기화 단계에서 명시적으로 막아준다.
-        model_path_lower = model_path.lower()
-        if "seg" in model_path_lower:
-            err_msg = (
-                "Loaded YOLOv5 segmentation model (path contains 'seg'). "
-                "This yolo_node currently supports ONLY detection models that output "
-                "bounding boxes (e.g. yolov5n.pt or a custom detection .pt), "
-                "not segmentation models (yolov5n-seg.pt). "
-                "Please switch to a detection model to avoid "
-                "ValueError: expected 4D tensor in SegmentationModel.forward()."
+        # Load YOLOv8 model (CPU/GPU as available)
+        self.get_logger().info(f"Loading YOLOv8 model from: {model_path}")
+        try:
+            # ultralytics YOLO v8 (yolov8n, yolov8n-seg 등) 로드
+            self.model = YOLO(model_path)
+        except Exception as e:
+            self.get_logger().error(
+                f"Failed to load YOLOv8 model from '{model_path}': {e}"
             )
-            self.get_logger().error(err_msg)
-            raise RuntimeError(err_msg)
+            raise
+
+        # 클래스 이름 캐시 (dict 또는 list)
+        self.class_names = self.model.names
 
         # TF / camera / depth state ------------------------------------------
         self.tf_buffer = Buffer()
@@ -245,22 +231,37 @@ class YoloNode(Node):
             self.get_logger().error(f"RGB cv_bridge error: {e}")
             return
 
-        # YOLOv5 inference
-        results = self.model(rgb)
-        boxes = results.xyxy[0]  # [x1, y1, x2, y2, conf, cls]
-        names = results.names
-
-        if boxes is None or len(boxes) == 0:
+        # YOLOv8 inference (detect/segment 공통, yolov8n-seg 포함)
+        # ultralytics YOLO 는 numpy (H, W, 3) BGR 이미지를 직접 받을 수 있다.
+        results = self.model(rgb, verbose=False)
+        if not results:
             return
+
+        r = results[0]
+        if r.boxes is None or len(r.boxes) == 0:
+            return
+
+        boxes_tensor = r.boxes  # Boxes 객체
+        xyxy = boxes_tensor.xyxy.cpu().numpy()           # (N, 4)
+        confs = boxes_tensor.conf.cpu().numpy()          # (N,)
+        clses = boxes_tensor.cls.cpu().numpy().astype(int)  # (N,)
+
+        names = self.class_names
 
         # Select best suspicious detection
         best_det = None
         best_conf = 0.0
-        for det in boxes:
-            x1, y1, x2, y2, conf, cls_id = det.tolist()
+        for (x1, y1, x2, y2), conf, cls_id in zip(xyxy, confs, clses):
             conf = float(conf)
             cls_id = int(cls_id)
-            class_name = names.get(cls_id, str(cls_id))
+            if isinstance(names, dict):
+                class_name = names.get(cls_id, str(cls_id))
+            else:
+                # names 가 list/tuple 인 경우
+                if 0 <= cls_id < len(names):
+                    class_name = names[cls_id]
+                else:
+                    class_name = str(cls_id)
 
             if class_name not in self.target_classes:
                 continue
