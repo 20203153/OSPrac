@@ -127,6 +127,24 @@ class YoloNode(Node):
         )
         self.model.eval()
 
+        # Segmentation 모델(yolov5n-seg.pt 등)을 사용하면 AutoShape 미지원으로 인해
+        # self.model(rgb) 호출 시 4D 텐서를 기대하다가 3D로 들어와서
+        # "ValueError: not enough values to unpack (expected 4, got 3)" 가 발생한다.
+        # 이 yolo_node 는 "바운딩 박스 탐지"만 필요하므로, 세그멘테이션 모델은 지원하지 않고
+        # 초기화 단계에서 명시적으로 막아준다.
+        model_path_lower = model_path.lower()
+        if "seg" in model_path_lower:
+            err_msg = (
+                "Loaded YOLOv5 segmentation model (path contains 'seg'). "
+                "This yolo_node currently supports ONLY detection models that output "
+                "bounding boxes (e.g. yolov5n.pt or a custom detection .pt), "
+                "not segmentation models (yolov5n-seg.pt). "
+                "Please switch to a detection model to avoid "
+                "ValueError: expected 4D tensor in SegmentationModel.forward()."
+            )
+            self.get_logger().error(err_msg)
+            raise RuntimeError(err_msg)
+
         # TF / camera / depth state ------------------------------------------
         self.tf_buffer = Buffer()
         self.tf_listener = TransformListener(self.tf_buffer, self)
