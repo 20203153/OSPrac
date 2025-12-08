@@ -99,7 +99,7 @@ class YoloNode(Node):
         )
 
         # Load YOLOv8 model (CPU/GPU as available)
-        self.get_logger().info(f"Loading YOLOv8 model from: {model_path}")
+        self.get_logger().info(f"Loading YOLO model from: {model_path}")
         try:
             # ultralytics YOLO v8 (yolov8n, yolov8n-seg 등) 로드
             self.model = YOLO(model_path)
