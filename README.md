@@ -135,8 +135,37 @@ ROS2 노드 구현은 [`tb4_target_selector/scripts/map_box_selector_node.py`](t
   - `base_frame` (기본 `base_link`)
   - `camera_frame` (기본 `camera_link`)
 
----
+### 3.4 동작 개요 (SLAM 탐색 + YOLOv5n + CV2)
 
+1. SLAM 및 Nav2 기반으로 TurtleBot4 가 환경을 탐색한다.
+2. 별도의 YOLO 노드가 카메라 RGB 이미지를 입력으로 받아 YOLOv5n 커스텀 모델을 이용해 타겟 물체 의심 bounding box 를 추론하고, [`YoloDetections`](tb4_target_selector/msg/YoloDetections.msg:1) 메시지를 `/yolo/detections` 로 발행한다.
+3. [`MapBoxSelectorNode.yolo_callback()`](tb4_target_selector/scripts/map_box_selector_node.py:255)는
+   - `target_classes` 와 `yolo_conf_threshold` 조건을 만족하는 detection 을 1개 선택하고,
+   - 깊이 이미지 + 카메라 내·외부 파라미터 + TF(`map` ← `camera_link`)를 통해 물체의 대략적인 월드 좌표(map frame)를 추정한다.
+     (구현: [`MapBoxSelectorNode._estimate_target_world_xy()`](tb4_target_selector/scripts/map_box_selector_node.py:389), 실패 시 [`MapBoxSelectorNode._fallback_target_world_xy()`](tb4_target_selector/scripts/map_box_selector_node.py:438) 사용)
+4. 추정된 물체 좌표 `(x_obj, y_obj)` 주변에 대해, 맵 해상도(`resolution`)를 이용해 한 변이 `roi_size_m` 인 정사각형 ROI 를 잘라낸다.
+   - 기본값 `roi_size_m=2.0` 은 **로봇 혹은 물체 기준 반경 1m (2m × 2m 정사각형)** 에 해당한다.
+5. ROI 안의 OccupancyGrid 데이터를 OpenCV 로 전처리하고 박스 후보를 찾는다.
+   구현은 [`MapBoxSelectorNode._extract_boxes_from_map_roi()`](tb4_target_selector/scripts/map_box_selector_node.py:495) 에 있으며, 다음과 같은 OpenCV 메소드를 사용한다.
+   - `cv2.morphologyEx` + `cv2.getStructuringElement` 로 노이즈 제거(클로징 연산)
+   - `cv2.findContours` 로 장애물 contour 추출
+   - `cv2.minAreaRect` 로 각 contour 에 대해 회전 사각형(박스 후보) 추정
+6. 이렇게 얻은 각 후보 박스는 맵 좌표계 상의 중심 위치(x, y), 가로/세로 크기(width, height, [m])로 변환된다.
+   - 우체국 박스 4호의 바닥 footprint 는 약 **0.41m × 0.31m** 이므로,
+   - 구현 확장 시 `width` / `height` 가 `0.41±0.10m`, `0.31±0.10m` 범위에 들어오는 후보만 필터링하면
+     **정사각 반경 1m 내의 우체국박스 4호 후보**만 남기도록 만들 수 있다.
+7. 최종적으로 각 후보는 [`MapBoxSelectorNode._score_box()`](tb4_target_selector/scripts/map_box_selector_node.py:566) 에서
+   - YOLO 가 추정한 물체 중심과의 거리,
+   - 박스의 면적(= 물리 크기),
+   - (가능할 경우) 로봇 진행 방향과의 정렬 정도
+   를 이용해 스코어링되고, 스코어 순으로 정렬된 상위 N개가 `/target_box_candidates`, 가장 높은 스코어 1개가 `/best_target_box` 로 publish 된다.
+
+> **요약**
+> - **(1) SLAM 탐색 + YOLOv5n**: `/yolo/detections` 로 물체 탐색
+> - **(2) CV2 기반 박스 추정**: 정사각 반경 1m(ROI) 안에서 OpenCV contour + minAreaRect 로 박스 후보 검출 및 크기 필터링(우체국 박스 4호 ±10cm)
+> - **(3) 스코어링 + 정렬**: 스코어 순으로 후보를 정렬해 토픽/서비스(향후 BoxQuery)로 제공
+
+---
 ## 4. ROS2 패키지 빌드 방법
 
 ### 4.1 워크스페이스 구성 예시

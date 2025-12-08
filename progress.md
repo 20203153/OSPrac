@@ -120,20 +120,33 @@ datasets/
      - BestTargetBox.msg
    - 기능:
      - /yolo/detections, /target_box_candidates, /best_target_box 토픽 인터페이스 표준화
+
 2. YOLO 노드 및 map_box_selector_node 구현/통합
    - YOLO 노드:
      - /camera/image_raw, /camera/camera_info, (선택) /camera/depth/image_raw 구독
      - YOLOv5n 커스텀 모델로 타겟 의심 Detection 생성 → /yolo/detections publish
    - map_box_selector_node:
-     - /yolo/detections, /map, TF(map-odom-base_link-camera_link) 사용
-     - 타겟 의심 발생 시, 맵 ROI 잘라 OpenCV로 장애물/구조물 박스 추정
-     - 스코어링 후 /target_box_candidates 및 /best_target_box publish
+     - /yolo/detections, /map, /camera/depth/image_raw, /camera/camera_info, TF(map-odom-base_link-camera_link) 사용
+     - SLAM 기반 탐색 중 YOLO 노드가 target_classes 에 해당하는 물체를 탐지하면,
+       1) 깊이 이미지 + 카메라 내·외부 파라미터 + TF(map←camera_link)를 이용해 물체의 대략적인 월드 좌표(map frame)를 추정
+       2) 해당 좌표(또는 필요 시 로봇 현재 좌표)를 중심으로, 한 변이 roi_size_m(기본 2.0m, 반경 1m) 인 정사각형 ROI 를 OccupancyGrid 에서 잘라냄
+       3) ROI 내 점유 셀을 이진 마스크로 변환한 뒤, OpenCV 형태학 연산(morphologyEx + getStructuringElement)으로 노이즈를 제거
+       4) cv2.findContours 로 장애물 영역 contour 를 추출하고, 각 contour 에 대해 cv2.minAreaRect 로 회전 사각형(박스 후보)을 추정
+       5) 각 박스 후보의 물리적 footprint(width, height [m])를 계산하여, 우체국 박스 4호 바닥 크기(0.41m × 0.31m)에 대해 ±0.10m 오차를 허용하는 크기 필터를 설계
+          (현재 구현은 면적 기반 가중치와 선호 면적(preferred_area)을 사용하며, 추후 width/height 범위 필터 추가 예정)
+       6) YOLO 물체 추정 위치와의 거리, 로봇 진행 방향과의 정렬 정도, 박스 크기(면적)를 통합한 스코어(MapBoxSelectorNode._score_box)를 계산
+       7) 스코어 순으로 정렬된 후보들을 /target_box_candidates 로 publish 하고, 최고 스코어 1개를 /best_target_box 로 publish
+       8) (설계 확장) 탐사 세션 동안 유망한 박스 후보의 pose/score 를 메모리에 누적 저장해 두었다가,
+          BoxQuery 서비스 요청 시 특정 상대 좌표(또는 ROI) 내 후보만 골라 스코어 순으로 정렬하여 반환하는 구조를 고려
+
 3. TurtleBot4 실제 환경 연동
    - slam_toolbox + Nav2 bringup
    - tb4_target_selector 패키지 빌드 및 map_box_selector_node 실행
    - /best_target_box 결과를 이용한 후속 행동(접근, 재탐색, 데이터 수집 전략) 설계
+
 4. 성능/파라미터 튜닝
    - target_classes, yolo_conf_threshold, roi_size_m, occ_threshold, min_area_pix, trigger_cooldown_sec 등의 파라미터 실험
    - 수 Hz 수준의 전체 파이프라인 유지 여부 확인 (YOLO + ROI + OpenCV + 스코어링)
+
 5. 최종 통합
    - 데이터 수집 노드, 네비게이션, tb4_target_selector 를 하나의 런치 파일로 묶어 자동 실행 플로우 구성

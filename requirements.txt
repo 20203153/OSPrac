@@ -16,6 +16,8 @@ matplotlib>=3.7.0
 PyYAML>=6.0.0
 tqdm>=4.65.0
 
-# 주의:
-# - ROS2 Jazzy 관련 파이썬 패키지(rclpy, sensor_msgs, geometry_msgs, cv_bridge 등)는
-#   일반적으로 apt로 설치되며, pip requirements 에는 포함하지 않는다.
+# ROS2 Python libraries (for development in venv)
+# - 실제 로봇/PC에서는 보통 apt (ros-jazzy-*) 로 설치되지만,
+#   가상환경에서 테스트할 때 pip install 시도를 위해 requirements 에도 명시해 둔다.
+rclpy
+tf-transformations
