@@ -328,18 +328,14 @@ class BoxSizeDebugNode(Node):
             color = (0, 255, 0) if is_target else (255, 0, 0)
             cv2.rectangle(overlay, (x1_i, y1_i), (x2_i, y2_i), color, 2)
 
-            label = (
-                f"{class_name} "
-                f"{'W/L' if self.width_mode else 'H'} "
-                f"{conf:.2f} "
-                f"{est_w:.2f}x{est_h:.2f}m"
-            )
+            # 화면에는 "물체 ID + Label" 만 표시, 나머지 정보(conf, size 등)는 로그로만 남김
+            label = f"{class_name} (id={cls_id})"
             cv2.putText(
                 overlay,
                 label,
                 (x1_i, max(0, y1_i - 5)),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.4,
+                0.5,
                 color,
                 1,
                 cv2.LINE_AA,
