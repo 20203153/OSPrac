@@ -132,6 +132,9 @@ def main() -> None:
 
         print(f"Detections: {len(boxes)}")
 
+        # 원본 250x250 프리뷰 이미지에 bounding box 를 그려서 저장
+        preview_vis = preview_250.copy()
+
         for i, bbox in enumerate(boxes):
             x1, y1, x2, y2, conf, cls_id = bbox.tolist()
 
@@ -155,6 +158,21 @@ def main() -> None:
                 f"size_est=({est_w:.3f}m, {est_h:.3f}m) "
                 f"is_target={is_target}"
             )
+
+            # preview_250 (250x250) 위에 bbox 그리기
+            x1_i, y1_i = int(x1), int(y1)
+            x2_i, y2_i = int(x2), int(y2)
+
+            # is_target 여부에 따라 색상 변경 (target: 초록, 기타: 파랑)
+            color = (0, 255, 0) if is_target else (255, 0, 0)
+            cv2.rectangle(preview_vis, (x1_i, y1_i), (x2_i, y2_i), color, 2)
+
+        # bounding box 가 그려진 250x250 이미지를 ./result 에 저장
+        os.makedirs("result", exist_ok=True)
+        base_name = os.path.basename(img_path)
+        out_path = os.path.join("result", base_name)
+        cv2.imwrite(out_path, preview_vis)
+        print(f"Saved preview with bboxes to: {out_path}")
 
 
 if __name__ == "__main__":

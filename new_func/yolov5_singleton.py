@@ -46,7 +46,7 @@ def load_yolov5_model(
         "ultralytics/yolov5",
         "custom",
         path=model_path,
-        source="local",
+        source="github",
     )
 
     _YOLO_MODEL.to(_YOLO_DEVICE)
