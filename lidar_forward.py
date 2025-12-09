@@ -483,9 +483,13 @@ class LidarForwardNode(Node):
         return float(np.median(all_valid))
 
     def _forward(self) -> None:
-        """로봇을 전진시키는 cmd_vel publish (단순 정속 전진)."""
+        """
+        로봇을 전진시키는 cmd_vel publish 함수였으나,
+        현재 버전에서는 **forward 움직임을 완전히 배제**하기 위해
+        정지 Twist(0.0 m/s)만 publish 한다.
+        """
         twist = Twist()
-        twist.linear.x = self.forward_speed
+        twist.linear.x = 0.0
         twist.angular.z = 0.0
         self.cmd_vel_pub.publish(twist)
 
