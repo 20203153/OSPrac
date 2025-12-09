@@ -39,14 +39,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model_path",
         type=str,
-        required=True,
         default="./box.pt",
         help="Path to YOLOv5 .pt weight file.",
     )
     parser.add_argument(
         "--testcase_path",
         type=str,
-        required=True,
         default="./testcase",
         help="Directory path containing test*.png images for batch test.",
     )
