@@ -69,7 +69,7 @@ import cv2
 import numpy as np
 
 
-def _round_sig(x: float, sig: int = 2) -> float:
+def _round_sig(x: float, sig: int = 3) -> float:
     """유효 숫자(sig) 자리수까지만 남기도록 반올림."""
     if x == 0.0:
         return 0.0
