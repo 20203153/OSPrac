@@ -6,8 +6,10 @@ Number = Union[int, float]
 BBoxLike = Sequence[Number]
 
 # 물리적인 목표 박스 크기 (우체국 박스 4호, 단위: 미터)
+# 가로(width) 0.41m, 세로(length) 0.31m, 높이(height) 0.28m
 TARGET_BOX_WIDTH_M: float = 0.41
-TARGET_BOX_HEIGHT_M: float = 0.31
+TARGET_BOX_LENGTH_M: float = 0.31
+TARGET_BOX_HEIGHT_M: float = 0.28
 
 # 허용 오차 (단위: 미터) - 기본 0.10m = 10cm
 DEFAULT_TOLERANCE_M: float = 0.10
@@ -101,3 +103,33 @@ def detect_box(
     diff1 = abs(est_dims[1] - tgt_dims[1])
 
     return (diff0 <= tolerance_m) and (diff1 <= tolerance_m)
+
+
+def detect_box_by_height(
+    bbox: BBoxLike,
+    distance: float,
+    fx: float = FX,
+    fy: float = FY,
+    target_height_m: float = TARGET_BOX_HEIGHT_M,
+    tolerance_m: float = DEFAULT_TOLERANCE_M,
+) -> bool:
+    """
+    YOLOv5 bounding box 의 "세로 픽셀 길이"만을 이용해
+    우체국 박스 4호의 높이(예: 0.28m)와 유사한지 판단하는 보조 함수.
+
+    - bbox 는 YOLOv5 xyxy 형식 [x1, y1, x2, y2, (conf), (cls)] 를 가정
+    - distance 는 카메라-물체 거리(미터)
+    - fx, fy 는 CameraInfo 에서 읽어온 focal length (픽셀 단위, CameraInfo.K[0], K[4])
+    - target_height_m 은 비교 기준이 되는 실제 높이 [m]
+    - tolerance_m 는 허용 오차 [m]
+
+    이 함수는 이미지 상의 "수직 방향 길이"에 해당하는 축만 사용하므로,
+    박스가 가로×세로가 아니라 세로×높이로 보이는 경우(측면에서 본 경우)에도
+    세로 bbox 길이가 실제 높이와 맞으면 True 를 반환할 수 있다.
+    """
+    # estimate_object_size_from_bbox() 는 (가로, 세로) 순으로 반환하므로
+    # 세로 방향 길이(화면 수직축)에 해당하는 height_m 만 사용한다.
+    _, est_h = estimate_object_size_from_bbox(bbox, distance_m=distance, fx=fx, fy=fy)
+
+    diff = abs(est_h - target_height_m)
+    return diff <= tolerance_m

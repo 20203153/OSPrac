@@ -430,3 +430,4 @@ $RECYCLE.BIN/
 # End of https://www.toptal.com/developers/gitignore/api/ros2,c++,cmake,python,venv,pycharm+all,macos,linux,windows
 
 box.pt
+result/
