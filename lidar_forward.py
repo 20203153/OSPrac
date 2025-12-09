@@ -466,20 +466,41 @@ class LidarForwardNode(Node):
         self, scan: LaserScan
     ) -> Optional[float]:
         """
-        LiDAR (/scan) 에서 전방(정면) 물체까지의 거리를 추정.
+        LiDAR (/scan) 에서 **정면 방향** 물체까지의 거리를 추정.
 
-        단순 버전:
-        - 모든 유효한 range 값 중 최소값을 사용.
-        - 더 정교하게 하려면 angle_min/max 와 카메라 중심 방향을 매핑하여
-          특정 중앙 sector 내에서만 최소값을 뽑도록 확장 가능.
+        - angle_min, angle_increment 정보를 사용해 "정면 ± sector_half_deg" 범위만 사용
+        - 해당 sector 내 유효 range 들의 최소값을 전방 거리로 본다.
+        - sector 내 유효값이 없으면, 전체 유효값 중 최소값을 fallback 으로 사용.
         """
         ranges = np.array(scan.ranges, dtype=np.float32)
-        valid = ranges[np.isfinite(ranges) & (ranges > 0.0)]
+        angles = np.arange(
+            scan.angle_min,
+            scan.angle_min + scan.angle_increment * len(ranges),
+            scan.angle_increment,
+            dtype=np.float32,
+        )
 
-        if valid.size == 0:
+        # 기본 sector: 정면(0 rad) 기준 ±10도
+        sector_half_deg = 10.0
+        sector_half_rad = math.radians(sector_half_deg)
+
+        # 정면(0rad) 인덱스 근처에서 ±sector_half_rad 범위 선택
+        # angle_min 이 0이 아닐 수 있으므로, 각도 배열 기준으로 필터링
+        valid_mask = np.isfinite(ranges) & (ranges > 0.0)
+
+        # 정면 근처 각도만 선택
+        front_mask = valid_mask & (np.abs(angles) <= sector_half_rad)
+        front_ranges = ranges[front_mask]
+
+        if front_ranges.size > 0:
+            return float(front_ranges.min())
+
+        # front sector 에 유효값이 없으면 전체 유효값 중 최소값 사용 (fallback)
+        all_valid = ranges[valid_mask]
+        if all_valid.size == 0:
             return None
 
-        return float(valid.min())
+        return float(all_valid.min())
 
     def _forward(self) -> None:
         """로봇을 전진시키는 cmd_vel publish (단순 정속 전진)."""
