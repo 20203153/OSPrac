@@ -80,6 +80,13 @@ def parse_args() -> argparse.Namespace:
         default=0.4,
         help="YOLOv5 confidence threshold (default: 0.4).",
     )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="cpu",
+        choices=["cpu", "cuda", "mps"],
+        help="YOLOv5 inference device (default: cpu).",
+    )
     return parser.parse_args()
 
 
@@ -89,7 +96,7 @@ def main() -> None:
     # 1) Load YOLOv5 model (singleton)
     _ = load_yolov5_model(
         model_path=args.model_path,
-        device=None,
+        device=args.device,
         use_half=False,
     )
 
