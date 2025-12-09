@@ -194,6 +194,8 @@ class LidarForwardNode(Node):
         self.target_distance_m: Optional[float] = None
         self.is_moving: bool = False
         self.done: bool = False
+        # LiDAR 전방 거리 로그용 타임스탬프 (로그 스팸 방지)
+        self.last_lidar_log_time: Optional[float] = None
 
         # 기록용 데이터
         # [{"distance": float, "x": float, "y": float}, ...]
@@ -303,6 +305,16 @@ class LidarForwardNode(Node):
             return
 
         self.current_distance_m = current_dist
+
+        # LiDAR 전방 거리 로그 (1초에 한 번만 출력)
+        if (
+            self.last_lidar_log_time is None
+            or now_sec - self.last_lidar_log_time > 1.0
+        ):
+            self.get_logger().info(
+                f"LiDAR forward distance: {self.current_distance_m:.3f} m"
+            )
+            self.last_lidar_log_time = now_sec
 
         # 이동 중인 경우: 아직 목표 거리까지 도달 안 했다면 계속 전진
         if self.is_moving:
