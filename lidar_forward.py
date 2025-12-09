@@ -2,42 +2,36 @@
 """
 lidar_forward: LiDAR + YOLOv5 기반 전진 측정 스크립트 (ROS2 + TurtleBot4)
 
-요구사항 요약
-------------
-1. 실행 시 현재 좌표를 (0, 0) 초기점으로 가정.
-   - 전진 방향을 +x 로 본다.
-   - 실제 TF/odom 은 사용하지 않고, LiDAR 거리만으로 전진 거리를 제어한다.
+최신 컨셉
+---------
+- 전진 제어:
+  - LiDAR 피드백을 사용하지 않고, "기계적으로 step_m 만큼 전진"한다고 가정.
+  - /cmd_vel 로 일정 속도(forward_speed)로 일정 시간 동안 전진 → 약 step_m 만큼 이동했다고 본다.
+- LiDAR:
+  - 제어에는 사용하지 않고, **기록/로그용**으로만 사용.
+  - 각 스텝에서 정면 방향 LiDAR 거리를 로그에 남겨 참고용으로만 본다.
+- 거리 축:
+  - JSON 의 distance 는 "개념상 거리 축"을 사용:
+    - base_distance_m 에서 시작해서 step_m 씩 줄어드는 값 (예: 2.0, 1.9, 1.8, ...)
+    - 실제 LiDAR 오차에 영향 받지 않는다.
+- 크기 축:
+  - JSON 의 x, y 는 YOLO bbox 의 width/height [픽셀 단위].
 
-2. 목표 Object 가 정면에 있다고 가정.
-   - 조금씩 전진하면서
-     - LiDAR 로 측정한 목표까지의 거리(distance, [m])
-     - YOLO + 카메라로 추정한 물체 가로/세로 길이(x, y, [m])
-   를 기록한다.
-
-3. 목표 Object 가 더 이상 YOLO 로 인식되지 않을 때까지 전진.
-
-4. 전진 스텝은 LiDAR 기준 약 10cm 내외(step_m).
-
-5. 최종 실행 결과를 JSON pretty print 로 다음과 같이 출력하고 종료:
-
-    {
-        "{casename}": [
-            {
-                "distance": float,  # LiDAR 로 측정한 거리 [m]
-                "x": float,         # YOLO+카메라로 추정한 가로 길이 [m]
-                "y": float          # YOLO+카메라로 추정한 세로 길이 [m]
-            },
-            ...
-        ]
-    }
-
-   - casename 은 ROS2 파라미터 "casename" 으로 입력받는다.
-
+JSON 출력 형식
+--------------
+{
+    "{casename}": [
+        {
+            "distance": float,  # 개념상 거리 (예: 2.0, 1.9, 1.8 ...) [m], 소숫점 둘째 자리
+            "x": float,         # YOLO bbox width [px]
+            "y": float          # YOLO bbox height [px]
+        },
+        ...
+    ]
+}
 
 실행 예시
 ---------
-ros2 run (또는 python) 으로 직접 실행:
-
 python lidar_forward.py \
   --ros-args \
     -p casename:=test_case_01 \
@@ -47,6 +41,7 @@ python lidar_forward.py \
     -p scan_topic:=/scan \
     -p cmd_vel_topic:=/cmd_vel \
     -p step_m:=0.10 \
+    -p forward_speed:=0.10 \
     -p yolo_conf_threshold:=0.4 \
     -p target_class:=box \
     -p device:=cpu
@@ -68,11 +63,6 @@ import warnings
 import cv2
 import numpy as np
 
-
-def _round_sig(x: float, digits: int = 2) -> float:
-    """소숫점 'digits' 자리까지 반올림."""
-    return round(x, digits)
-
 import rclpy
 from rclpy.node import Node
 
@@ -80,7 +70,6 @@ from sensor_msgs.msg import Image, CameraInfo, LaserScan
 from geometry_msgs.msg import Twist
 from cv_bridge import CvBridge, CvBridgeError
 
-from new_func.detect_func import estimate_object_size_from_bbox
 from new_func.yolov5_singleton import (
     load_yolov5_model,
     run_yolov5_inference,
@@ -109,8 +98,14 @@ class LidarForwardNode(Node):
         self.declare_parameter("scan_topic", "/scan")
         self.declare_parameter("cmd_vel_topic", "/cmd_vel")
 
-        # LiDAR 기준 전진 스텝 (약 10cm 내외)
+        # 개념상 전진 스텝 (약 10cm)
         self.declare_parameter("step_m", 0.10)
+
+        # 전진 속도 [m/s] (예: 0.1 m/s → 1초 전진 = 0.1m 이동 가정)
+        self.declare_parameter("forward_speed", 0.10)
+
+        # 개념상 시작 거리 [m] (예: 2.0m 에서 시작)
+        self.declare_parameter("base_distance_m", 2.0)
 
         # YOLO 관련 파라미터
         self.declare_parameter("yolo_conf_threshold", 0.4)
@@ -118,7 +113,7 @@ class LidarForwardNode(Node):
         self.declare_parameter("img_size", 640)
         self.declare_parameter("device", "cpu")
 
-        # YOLO 평가 최소 간격 (초). 너무 빨리 돌지 않게 0.5~1.0 정도 권장.
+        # YOLO 평가 최소 간격 (초)
         self.declare_parameter("yolo_eval_min_interval_sec", 1.0)
 
         # 파라미터 값 읽기
@@ -144,6 +139,12 @@ class LidarForwardNode(Node):
         )
         self.step_m: float = (
             self.get_parameter("step_m").get_parameter_value().double_value
+        )
+        self.forward_speed: float = (
+            self.get_parameter("forward_speed").get_parameter_value().double_value
+        )
+        self.base_distance_m: float = (
+            self.get_parameter("base_distance_m").get_parameter_value().double_value
         )
         self.yolo_conf_threshold: float = (
             self.get_parameter("yolo_conf_threshold")
@@ -195,18 +196,17 @@ class LidarForwardNode(Node):
 
         # movement / sampling state
         self.last_yolo_eval_time: Optional[float] = None
-        self.current_distance_m: Optional[float] = None
-        self.target_distance_m: Optional[float] = None
         self.is_moving: bool = False
+        self.move_end_time: Optional[float] = None
         self.done: bool = False
-        # LiDAR 전방 거리 로그용 타임스탬프 (로그 스팸 방지)
+
+        # LiDAR 기록용
+        self.current_distance_m: Optional[float] = None
         self.last_lidar_log_time: Optional[float] = None
 
-        # "개념상" 기준 거리 (예: 2.0m 에서 step_m 씩 줄여가며 샘플링)
-        # 실제 LiDAR 거리(current_distance_m)는 그대로 사용하되,
-        # JSON distance 필드는 base_distance_m - n * step_m 로 기록한다.
-        self.base_distance_m: float = 2.0
-
+        # 개념상 거리 축: base_distance_m 에서 시작해서 step_m 씩 줄어든다.
+        # i번째 샘플의 distance = base_distance_m - i * step_m
+        # (실제 LiDAR 거리는 로그/참고용)
         # 기록용 데이터
         # [{"distance": float, "x": float, "y": float}, ...]
         self.records: List[Dict[str, float]] = []
@@ -254,6 +254,8 @@ class LidarForwardNode(Node):
             f"  scan_topic={self.scan_topic}\n"
             f"  cmd_vel_topic={self.cmd_vel_topic}\n"
             f"  step_m={self.step_m}\n"
+            f"  forward_speed={self.forward_speed}\n"
+            f"  base_distance_m={self.base_distance_m}\n"
             f"  yolo_conf_threshold={self.yolo_conf_threshold}\n"
             f"  target_class={self.target_class}\n"
             f"  yolo_eval_min_interval_sec={self.yolo_eval_min_interval_sec}"
@@ -297,53 +299,40 @@ class LidarForwardNode(Node):
 
         now_sec = self.get_clock().now().nanoseconds * 1e-9
 
-        # 필수 데이터 확보 여부 확인
+        # 필수 데이터 확보 여부 확인 (LiDAR 는 기록용이므로 강제 조건 아님)
         if self.latest_rgb is None or self.latest_rgb_header is None:
             self.get_logger().debug("No RGB frame yet; skip.")
             return
         if self.fx is None or self.fy is None:
             self.get_logger().debug("No CameraInfo yet (fx, fy); skip.")
             return
-        if self.latest_scan is None:
-            self.get_logger().debug("No LiDAR scan yet; skip.")
-            return
 
-        # 현재 LiDAR 거리 추정 (정면 최소 거리)
-        current_dist = self._estimate_forward_distance_from_scan(self.latest_scan)
-        if current_dist is None or current_dist <= 0.0:
-            self.get_logger().warn("Invalid LiDAR distance; skip this cycle.")
-            return
+        # LiDAR: 기록/로그용 (정면 sector 기준 거리)
+        if self.latest_scan is not None:
+            lidar_dist = self._estimate_forward_distance_from_scan(self.latest_scan)
+            if lidar_dist is not None and lidar_dist > 0.0:
+                self.current_distance_m = float(lidar_dist)
 
-        self.current_distance_m = current_dist
-
-        # LiDAR 전방 거리 로그 (1초에 한 번만 출력)
-        if (
-            self.last_lidar_log_time is None
-            or now_sec - self.last_lidar_log_time > 1.0
-        ):
-            self.get_logger().info(
-                f"LiDAR forward distance: {self.current_distance_m:.3f} m"
-            )
-            self.last_lidar_log_time = now_sec
-
-        # 이동 중인 경우: 아직 목표 거리까지 도달 안 했다면 계속 전진
-        if self.is_moving:
-            # TurtleBot4 의 /cmd_vel 제어 특성상, 계속해서 전진 명령을 보내줘야 한다.
-            # 따라서 이동 상태에서는 매 타이머 주기마다 _forward() 를 호출해 정속 전진을 유지한다.
-            self._forward()
-
-            if (
-                self.current_distance_m is not None
-                and self.target_distance_m is not None
-            ):
-                # 목표 거리(target_distance_m) 이하로 가까워지면 정지 후 샘플링 모드로 전환
-                if self.current_distance_m <= self.target_distance_m:
-                    self._stop()
-                    self.is_moving = False
+                if (
+                    self.last_lidar_log_time is None
+                    or now_sec - self.last_lidar_log_time > 1.0
+                ):
                     self.get_logger().info(
-                        f"Reached step target distance={self.current_distance_m:.3f} m "
-                        f"(target={self.target_distance_m:.3f} m). Stopping for next sample."
+                        f"LiDAR forward distance (log only): {self.current_distance_m:.3f} m"
                     )
+                    self.last_lidar_log_time = now_sec
+
+        # 이동 중이면, 시간 기반으로 전진 유지
+        if self.is_moving:
+            if self.move_end_time is not None and now_sec < self.move_end_time:
+                # 전진 유지
+                self._forward()
+                return
+            # 목표 시간 도달 → 정지 후 다음 샘플링으로
+            self._stop()
+            self.is_moving = False
+            self.move_end_time = None
+            self.get_logger().info("Reached step by time-based motion. Stopping for next sample.")
             return
 
         # 여기부터는 로봇이 정지 상태에서 샘플 + 다음 스텝 계획
@@ -411,26 +400,18 @@ class LidarForwardNode(Node):
         pixel_width = max(0.0, float(x2 - x1))
         pixel_height = max(0.0, float(y2 - y1))
 
-        # 개념상 기준 거리 (예: 2.0m 에서 step_m 씩 줄여가며 샘플링)
-        # 첫 샘플: base_distance_m
-        # 두 번째 샘플: base_distance_m - step_m
-        # ...
-        conceptual_distance = max(
-            self.base_distance_m - self.step_m * (len(self.records)), 0.0
-        )
-
-        # LiDAR 기반 실제 거리값을 소숫점 둘째 자리까지 반올림
-        lidar_rounded = (
-            _round_sig(self.current_distance_m, digits=2)
-            if self.current_distance_m is not None
-            else 0.0
-        )
+        # 개념상 거리: base_distance_m 에서 step_m 씩 줄어든다.
+        # 샘플 index = len(self.records) (0-based)
+        conceptual_distance = self.base_distance_m - self.step_m * len(self.records)
+        if conceptual_distance < 0.0:
+            conceptual_distance = 0.0
+        conceptual_distance_rounded = round(conceptual_distance, 2)
 
         # 기록 추가:
-        #  - distance: LiDAR 로 측정한 실제 거리(유효숫자 2자리) [m]
+        #  - distance: 개념상 거리 (2.0 - n*step_m) [m], 소숫점 둘째 자리
         #  - x, y: YOLO bbox width/height [px]
         record = {
-            "distance": float(lidar_rounded),
+            "distance": float(conceptual_distance_rounded),
             "x": float(pixel_width),
             "y": float(pixel_height),
         }
@@ -438,18 +419,23 @@ class LidarForwardNode(Node):
 
         self.get_logger().info(
             f"[sample] class={class_name}(id={cls_id}) conf={conf:.3f} "
-            f"lidar_dist={self.current_distance_m:.3f}m "
-            f"lidar_dist_rounded={lidar_rounded:.3f}m "
-            f"conceptual_dist={conceptual_distance:.3f}m "
+            f"conceptual_dist={conceptual_distance_rounded:.2f}m "
             f"bbox_pix=({pixel_width:.1f}px, {pixel_height:.1f}px) "
-            f"step_index={len(self.records)}"
+            f"step_index={len(self.records)} "
+            f"lidar_log={self.current_distance_m:.3f}m" if self.current_distance_m is not None else ""
         )
 
-        # 다음 스텝을 위한 목표 거리 설정 (현재보다 step_m 만큼 가까워지도록)
-        self.target_distance_m = max(self.current_distance_m - self.step_m, 0.05)
+        # 다음 스텝을 위한 전진 시간 계산: step_m / forward_speed
+        if self.forward_speed <= 0.0:
+            self.get_logger().error("forward_speed must be positive.")
+            self._finish_and_print()
+            return
+
+        move_duration = self.step_m / self.forward_speed
+        self.move_end_time = now_sec + move_duration
         self.get_logger().info(
-            f"Planning next step: current={self.current_distance_m:.3f} m, "
-            f"target={self.target_distance_m:.3f} m (step={self.step_m:.3f} m)"
+            f"Planning next step: conceptual_dist_next={max(conceptual_distance - self.step_m, 0.0):.2f}m, "
+            f"move_duration={move_duration:.2f}s (speed={self.forward_speed:.2f} m/s)"
         )
 
         # 앞으로 전진 시작
@@ -464,12 +450,10 @@ class LidarForwardNode(Node):
         self, scan: LaserScan
     ) -> Optional[float]:
         """
-        LiDAR (/scan) 에서 **정면 방향** 물체까지의 거리를 추정.
+        LiDAR (/scan) 에서 **정면 방향** 물체까지의 거리를 추정 (기록/로그용).
 
         - angle_min, angle_increment 정보를 사용해 "정면 ± sector_half_deg" 범위만 사용
-        - 해당 sector 내 유효 range 들의 **중앙값(median)** 을 전방 거리로 본다.
-          (min 대신 median 을 사용해, 0.1m 같은 outlier 로 인한 튀는 값을 완화)
-        - sector 내 유효값이 없으면, 전체 유효값 중 중앙값을 fallback 으로 사용.
+        - 해당 sector 내 유효 range 들의 중앙값(median)을 사용해 튀는 값을 완화
         """
         ranges = np.array(scan.ranges, dtype=np.float32)
 
@@ -481,22 +465,17 @@ class LidarForwardNode(Node):
             dtype=np.float32,
         )
 
-        # 기본 sector: 정면(0 rad) 기준 ±10도 (필요하면 여기 값을 줄여 사용할 수 있음)
+        # 기본 sector: 정면(0 rad) 기준 ±10도
         sector_half_deg = 10.0
         sector_half_rad = math.radians(sector_half_deg)
 
-        # 유효한 거리만 필터링
         valid_mask = np.isfinite(ranges) & (ranges > 0.0)
-
-        # 정면 근처 각도만 선택
         front_mask = valid_mask & (np.abs(angles) <= sector_half_rad)
         front_ranges = ranges[front_mask]
 
         if front_ranges.size > 0:
-            # 튀는 값(매우 짧은 거리 하나) 때문에 값이 급변하는 것을 막기 위해 중앙값 사용
             return float(np.median(front_ranges))
 
-        # front sector 에 유효값이 없으면 전체 유효값 중 중앙값을 fallback 으로 사용
         all_valid = ranges[valid_mask]
         if all_valid.size == 0:
             return None
@@ -506,7 +485,7 @@ class LidarForwardNode(Node):
     def _forward(self) -> None:
         """로봇을 전진시키는 cmd_vel publish (단순 정속 전진)."""
         twist = Twist()
-        twist.linear.x = 0.1  # 0.1 m/s 정도로 천천히 전진
+        twist.linear.x = self.forward_speed
         twist.angular.z = 0.0
         self.cmd_vel_pub.publish(twist)
 
@@ -548,4 +527,3 @@ def main(args=None) -> None:
 
 if __name__ == "__main__":
     main()
-
