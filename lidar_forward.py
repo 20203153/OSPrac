@@ -68,6 +68,13 @@ import warnings
 import cv2
 import numpy as np
 
+
+def _round_sig(x: float, sig: int = 2) -> float:
+    """유효 숫자(sig) 자리수까지만 남기도록 반올림."""
+    if x == 0.0:
+        return 0.0
+    return round(x, sig - int(math.floor(math.log10(abs(x)))) - 1)
+
 import rclpy
 from rclpy.node import Node
 
@@ -313,16 +320,6 @@ class LidarForwardNode(Node):
 
         # LiDAR 전방 거리 로그 (1초에 한 번만 출력)
         if (
-            getattr(self, "last_lidar_log_time", None) is None
-            or now_sec - getattr(self, "last_lidar_log_time") > 1.0
-        ):
-            self.get_logger().info(
-                f"LiDAR forward distance: {self.current_distance_m:.3f} m"
-            )
-            self.last_lidar_log_time = now_sec
-
-        # LiDAR 전방 거리 로그 (1초에 한 번만 출력)
-        if (
             self.last_lidar_log_time is None
             or now_sec - self.last_lidar_log_time > 1.0
         ):
@@ -333,7 +330,14 @@ class LidarForwardNode(Node):
 
         # 이동 중인 경우: 아직 목표 거리까지 도달 안 했다면 계속 전진
         if self.is_moving:
-            if self.current_distance_m is not None and self.target_distance_m is not None:
+            # TurtleBot4 의 /cmd_vel 제어 특성상, 계속해서 전진 명령을 보내줘야 한다.
+            # 따라서 이동 상태에서는 매 타이머 주기마다 _forward() 를 호출해 정속 전진을 유지한다.
+            self._forward()
+
+            if (
+                self.current_distance_m is not None
+                and self.target_distance_m is not None
+            ):
                 # 목표 거리(target_distance_m) 이하로 가까워지면 정지 후 샘플링 모드로 전환
                 if self.current_distance_m <= self.target_distance_m:
                     self._stop()
@@ -417,11 +421,18 @@ class LidarForwardNode(Node):
             self.base_distance_m - self.step_m * (len(self.records)), 0.0
         )
 
+        # LiDAR 기반 실제 거리값을 유효숫자 2자리로 반올림
+        lidar_rounded = (
+            _round_sig(self.current_distance_m, sig=2)
+            if self.current_distance_m is not None
+            else 0.0
+        )
+
         # 기록 추가:
-        #  - distance: 개념상 기준 거리 (2.0 - n*step_m) [m]
+        #  - distance: LiDAR 로 측정한 실제 거리(유효숫자 2자리) [m]
         #  - x, y: YOLO bbox width/height [px]
         record = {
-            "distance": float(conceptual_distance),
+            "distance": float(lidar_rounded),
             "x": float(pixel_width),
             "y": float(pixel_height),
         }
@@ -430,6 +441,7 @@ class LidarForwardNode(Node):
         self.get_logger().info(
             f"[sample] class={class_name}(id={cls_id}) conf={conf:.3f} "
             f"lidar_dist={self.current_distance_m:.3f}m "
+            f"lidar_dist_rounded={lidar_rounded:.3f}m "
             f"conceptual_dist={conceptual_distance:.3f}m "
             f"bbox_pix=({pixel_width:.1f}px, {pixel_height:.1f}px) "
             f"step_index={len(self.records)}"
