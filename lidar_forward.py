@@ -197,6 +197,11 @@ class LidarForwardNode(Node):
         # LiDAR 전방 거리 로그용 타임스탬프 (로그 스팸 방지)
         self.last_lidar_log_time: Optional[float] = None
 
+        # "개념상" 기준 거리 (예: 2.0m 에서 step_m 씩 줄여가며 샘플링)
+        # 실제 LiDAR 거리(current_distance_m)는 그대로 사용하되,
+        # JSON distance 필드는 base_distance_m - n * step_m 로 기록한다.
+        self.base_distance_m: float = 2.0
+
         # 기록용 데이터
         # [{"distance": float, "x": float, "y": float}, ...]
         self.records: List[Dict[str, float]] = []
@@ -404,17 +409,28 @@ class LidarForwardNode(Node):
         pixel_width = max(0.0, float(x2 - x1))
         pixel_height = max(0.0, float(y2 - y1))
 
-        # 기록 추가: x, y 를 "픽셀 단위 width/height" 로 저장
+        # 개념상 기준 거리 (예: 2.0m 에서 step_m 씩 줄여가며 샘플링)
+        # 첫 샘플: base_distance_m
+        # 두 번째 샘플: base_distance_m - step_m
+        # ...
+        conceptual_distance = max(
+            self.base_distance_m - self.step_m * (len(self.records)), 0.0
+        )
+
+        # 기록 추가:
+        #  - distance: 개념상 기준 거리 (2.0 - n*step_m) [m]
+        #  - x, y: YOLO bbox width/height [px]
         record = {
-            "distance": float(self.current_distance_m),  # LiDAR 거리 [m]
-            "x": float(pixel_width),                     # YOLO bbox width [px]
-            "y": float(pixel_height),                    # YOLO bbox height [px]
+            "distance": float(conceptual_distance),
+            "x": float(pixel_width),
+            "y": float(pixel_height),
         }
         self.records.append(record)
 
         self.get_logger().info(
             f"[sample] class={class_name}(id={cls_id}) conf={conf:.3f} "
-            f"distance={self.current_distance_m:.3f}m "
+            f"lidar_dist={self.current_distance_m:.3f}m "
+            f"conceptual_dist={conceptual_distance:.3f}m "
             f"bbox_pix=({pixel_width:.1f}px, {pixel_height:.1f}px) "
             f"step_index={len(self.records)}"
         )
