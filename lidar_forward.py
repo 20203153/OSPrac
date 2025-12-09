@@ -497,13 +497,4 @@ def main(args=None) -> None:
 
 
 if __name__ == "__main__":
-    main()        node.get_logger().info("Shutting down LidarForwardNode (KeyboardInterrupt).")
-    finally:
-        node._stop()
-        node.destroy_node()
-        if rclpy.ok():
-            rclpy.shutdown()
-
-
-if __name__ == "__main__":
     main()
