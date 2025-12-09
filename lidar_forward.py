@@ -308,6 +308,16 @@ class LidarForwardNode(Node):
 
         # LiDAR 전방 거리 로그 (1초에 한 번만 출력)
         if (
+            getattr(self, "last_lidar_log_time", None) is None
+            or now_sec - getattr(self, "last_lidar_log_time") > 1.0
+        ):
+            self.get_logger().info(
+                f"LiDAR forward distance: {self.current_distance_m:.3f} m"
+            )
+            self.last_lidar_log_time = now_sec
+
+        # LiDAR 전방 거리 로그 (1초에 한 번만 출력)
+        if (
             self.last_lidar_log_time is None
             or now_sec - self.last_lidar_log_time > 1.0
         ):
@@ -389,26 +399,23 @@ class LidarForwardNode(Node):
 
         det, class_name, cls_id, conf = best_det
 
-        # 현재 LiDAR 거리 + YOLO bbox 로 실제 크기 추정
-        est_w, est_h = estimate_object_size_from_bbox(
-            bbox=det,
-            distance_m=self.current_distance_m,
-            fx=self.fx,
-            fy=self.fy,
-        )
+        # YOLO bbox 의 픽셀 폭/높이 계산 (x, y 방향)
+        x1, y1, x2, y2, _, _ = det.tolist()
+        pixel_width = max(0.0, float(x2 - x1))
+        pixel_height = max(0.0, float(y2 - y1))
 
-        # 기록 추가
+        # 기록 추가: x, y 를 "픽셀 단위 width/height" 로 저장
         record = {
-            "distance": float(self.current_distance_m),
-            "x": float(est_w),
-            "y": float(est_h),
+            "distance": float(self.current_distance_m),  # LiDAR 거리 [m]
+            "x": float(pixel_width),                     # YOLO bbox width [px]
+            "y": float(pixel_height),                    # YOLO bbox height [px]
         }
         self.records.append(record)
 
         self.get_logger().info(
             f"[sample] class={class_name}(id={cls_id}) conf={conf:.3f} "
             f"distance={self.current_distance_m:.3f}m "
-            f"size_est=({est_w:.3f}m, {est_h:.3f}m) "
+            f"bbox_pix=({pixel_width:.1f}px, {pixel_height:.1f}px) "
             f"step_index={len(self.records)}"
         )
 
@@ -482,6 +489,15 @@ def main(args=None) -> None:
         rclpy.spin(node)
     except KeyboardInterrupt:
         node.get_logger().info("Shutting down LidarForwardNode (KeyboardInterrupt).")
+    finally:
+        node._stop()
+        node.destroy_node()
+        if rclpy.ok():
+            rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()        node.get_logger().info("Shutting down LidarForwardNode (KeyboardInterrupt).")
     finally:
         node._stop()
         node.destroy_node()
