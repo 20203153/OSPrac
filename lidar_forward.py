@@ -194,21 +194,20 @@ class LidarForwardNode(Node):
         self.fx: Optional[float] = None
         self.fy: Optional[float] = None
 
-        # movement / sampling state
+        # sampling state
         self.last_yolo_eval_time: Optional[float] = None
-        self.is_moving: bool = False
-        self.move_end_time: Optional[float] = None
+        # 샘플링 간격: 10초마다 한 번씩 샘플 기록 (로봇이 10cm 전진했다고 가정)
+        self.last_sample_time: Optional[float] = None
         self.done: bool = False
 
         # LiDAR 기록용
         self.current_distance_m: Optional[float] = None
         self.last_lidar_log_time: Optional[float] = None
 
-        # 개념상 거리 축: base_distance_m 에서 시작해서 step_m 씩 줄어든다.
-        # i번째 샘플의 distance = base_distance_m - i * step_m
-        # (실제 LiDAR 거리는 로그/참고용)
         # 기록용 데이터
         # [{"distance": float, "x": float, "y": float}, ...]
+        #  - distance: LiDAR 로 측정한 실제 전방 거리 [m]
+        #  - x, y: YOLO bbox width/height [px]
         self.records: List[Dict[str, float]] = []
 
         # ------------------------------------------------------------------
@@ -299,44 +298,43 @@ class LidarForwardNode(Node):
 
         now_sec = self.get_clock().now().nanoseconds * 1e-9
 
-        # 필수 데이터 확보 여부 확인 (LiDAR 는 기록용이므로 강제 조건 아님)
+        # 필수 데이터 확보 여부 확인
         if self.latest_rgb is None or self.latest_rgb_header is None:
             self.get_logger().debug("No RGB frame yet; skip.")
             return
         if self.fx is None or self.fy is None:
             self.get_logger().debug("No CameraInfo yet (fx, fy); skip.")
             return
-
-        # LiDAR: 기록/로그용 (정면 sector 기준 거리)
-        if self.latest_scan is not None:
-            lidar_dist = self._estimate_forward_distance_from_scan(self.latest_scan)
-            if lidar_dist is not None and lidar_dist > 0.0:
-                self.current_distance_m = float(lidar_dist)
-
-                if (
-                    self.last_lidar_log_time is None
-                    or now_sec - self.last_lidar_log_time > 1.0
-                ):
-                    self.get_logger().info(
-                        f"LiDAR forward distance (log only): {self.current_distance_m:.3f} m"
-                    )
-                    self.last_lidar_log_time = now_sec
-
-        # 이동 중이면, 시간 기반으로 전진 유지
-        if self.is_moving:
-            if self.move_end_time is not None and now_sec < self.move_end_time:
-                # 전진 유지
-                self._forward()
-                return
-            # 목표 시간 도달 → 정지 후 다음 샘플링으로
-            self._stop()
-            self.is_moving = False
-            self.move_end_time = None
-            self.get_logger().info("Reached step by time-based motion. Stopping for next sample.")
+        if self.latest_scan is None:
+            self.get_logger().debug("No LiDAR scan yet; skip.")
             return
 
-        # 여기부터는 로봇이 정지 상태에서 샘플 + 다음 스텝 계획
-        # YOLO 호출 주기 제한
+        # LiDAR: 정면 거리 추정
+        lidar_dist = self._estimate_forward_distance_from_scan(self.latest_scan)
+        if lidar_dist is None or lidar_dist <= 0.0:
+            self.get_logger().warn("Invalid LiDAR distance; skip this cycle.")
+            return
+
+        self.current_distance_m = float(lidar_dist)
+
+        # LiDAR 전방 거리 로그 (1초에 한 번만 출력)
+        if (
+            self.last_lidar_log_time is None
+            or now_sec - self.last_lidar_log_time > 1.0
+        ):
+            self.get_logger().info(
+                f"LiDAR forward distance: {self.current_distance_m:.3f} m"
+            )
+            self.last_lidar_log_time = now_sec
+
+        # 샘플 간격(10초) 제어: 최근 샘플 이후 10초가 지나지 않았다면 대기
+        if (
+            self.last_sample_time is not None
+            and now_sec - self.last_sample_time < 10.0
+        ):
+            return
+
+        # YOLO 호출 주기 제한 (옵션)
         if (
             self.last_yolo_eval_time is not None
             and now_sec - self.last_yolo_eval_time < self.yolo_eval_min_interval_sec
@@ -400,18 +398,16 @@ class LidarForwardNode(Node):
         pixel_width = max(0.0, float(x2 - x1))
         pixel_height = max(0.0, float(y2 - y1))
 
-        # 개념상 거리: base_distance_m 에서 step_m 씩 줄어든다.
-        # 샘플 index = len(self.records) (0-based)
-        conceptual_distance = self.base_distance_m - self.step_m * len(self.records)
-        if conceptual_distance < 0.0:
-            conceptual_distance = 0.0
-        conceptual_distance_rounded = round(conceptual_distance, 2)
-
         # 기록 추가:
-        #  - distance: 개념상 거리 (2.0 - n*step_m) [m], 소숫점 둘째 자리
+        #  - distance: LiDAR 로 측정한 실제 전방 거리 [m]
         #  - x, y: YOLO bbox width/height [px]
+        distance_val = (
+            float(self.current_distance_m)
+            if self.current_distance_m is not None
+            else 0.0
+        )
         record = {
-            "distance": float(conceptual_distance_rounded),
+            "distance": distance_val,
             "x": float(pixel_width),
             "y": float(pixel_height),
         }
@@ -419,28 +415,17 @@ class LidarForwardNode(Node):
 
         self.get_logger().info(
             f"[sample] class={class_name}(id={cls_id}) conf={conf:.3f} "
-            f"conceptual_dist={conceptual_distance_rounded:.2f}m "
+            f"lidar_dist={distance_val:.3f}m "
             f"bbox_pix=({pixel_width:.1f}px, {pixel_height:.1f}px) "
-            f"step_index={len(self.records)} "
-            f"lidar_log={self.current_distance_m:.3f}m" if self.current_distance_m is not None else ""
+            f"step_index={len(self.records)}"
         )
 
-        # 다음 스텝을 위한 전진 시간 계산: step_m / forward_speed
-        if self.forward_speed <= 0.0:
-            self.get_logger().error("forward_speed must be positive.")
-            self._finish_and_print()
-            return
-
-        move_duration = self.step_m / self.forward_speed
-        self.move_end_time = now_sec + move_duration
+        # 다음 샘플 타이밍 기록 (10초 후에 다음 샘플을 측정한다고 가정)
+        self.last_sample_time = now_sec
         self.get_logger().info(
-            f"Planning next step: conceptual_dist_next={max(conceptual_distance - self.step_m, 0.0):.2f}m, "
-            f"move_duration={move_duration:.2f}s (speed={self.forward_speed:.2f} m/s)"
+            "Next sample will be taken after 10 seconds "
+            "(assume robot has moved additional 0.10 m forward)."
         )
-
-        # 앞으로 전진 시작
-        self._forward()
-        self.is_moving = True
 
     # ------------------------------------------------------------------
     # Helper methods
