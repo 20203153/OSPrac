@@ -37,6 +37,13 @@ install(PROGRAMS
   DESTINATION lib/${PROJECT_NAME}
 )
 
+# box_size_debug_node 가 사용하는 공용 Python 모듈(detect_func, yolov5_singleton)도 함께 설치
+install(FILES
+  scripts/detect_func.py
+  scripts/yolov5_singleton.py
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 install(DIRECTORY
   msg
   srv
