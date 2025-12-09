@@ -12,6 +12,17 @@ from new_func.detect_func import detect_box, detect_box_by_height, estimate_obje
 from new_func.yolov5_singleton import load_yolov5_model, run_yolov5_inference
 
 
+import warnings
+
+
+# torch.cuda.amp.autocast 관련 FutureWarning 무시
+warnings.filterwarnings(
+    "ignore",
+    category=FutureWarning,
+    message=r".*torch\.cuda\.amp\.autocast.*",
+)
+
+
 def crop_center_square_and_resize_to_250(bgr):
     """
     원본 이미지에서 중앙 정사각형 영역을 잘라낸 뒤 250x250으로 리사이즈한다.

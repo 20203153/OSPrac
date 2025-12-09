@@ -35,8 +35,16 @@ from __future__ import annotations
 
 from typing import Optional
 
+import warnings
 import cv2
 import numpy as np
+
+# torch.cuda.amp.autocast 관련 FutureWarning 무시
+warnings.filterwarnings(
+    "ignore",
+    category=FutureWarning,
+    message=r".*torch\.cuda\.amp\.autocast.*",
+)
 
 import rclpy
 from rclpy.node import Node
@@ -52,6 +60,7 @@ from new_func.detect_func import (
 from new_func.yolov5_singleton import (
     load_yolov5_model,
     run_yolov5_inference,
+    get_yolov5_model,
 )
 
 
@@ -65,8 +74,8 @@ class BoxSizeDebugNode(Node):
         self.declare_parameter("model_path", "yolov5n.pt")
         self.declare_parameter("rgb_topic", "/oakd/rgb/preview/image_raw")
         self.declare_parameter("camera_info_topic", "/oakd/rgb/preview/camera_info")
-        # 최대 30Hz 정도 → 주기 ~0.033초
-        self.declare_parameter("yolo_eval_min_interval_sec", 1.0 / 30.0)
+        # 속도 제한: 기본 2초에 한 번만 YOLO 추론 (약 0.5Hz)
+        self.declare_parameter("yolo_eval_min_interval_sec", 2.0)
         # width_mode=True  → width & length 기반 detect_box 사용
         # width_mode=False → height-only 기반 detect_box_by_height 사용
         self.declare_parameter("width_mode", True)
@@ -125,6 +134,9 @@ class BoxSizeDebugNode(Node):
                 device=self.device,
                 use_half=False,
             )
+            # YOLOv5 클래스 이름 캐시
+            model = get_yolov5_model()
+            self.class_names = getattr(model, "names", {})
         except Exception as e:
             self.get_logger().error(f"Failed to load YOLOv5 model: {e}")
             raise
@@ -214,6 +226,13 @@ class BoxSizeDebugNode(Node):
     def timer_callback(self) -> None:
         now_sec = self.get_clock().now().nanoseconds * 1e-9
 
+        # YOLO 호출 주기 안전장치 (타이머 주기와 별도로 최대 주기 제한)
+        if (
+            self.last_yolo_eval_time is not None
+            and now_sec - self.last_yolo_eval_time < self.yolo_eval_min_interval_sec
+        ):
+            return
+
         # 1) 필수 데이터 확인
         if self.latest_rgb is None or self.latest_rgb_header is None:
             self.get_logger().debug("No RGB frame yet; skip YOLO.")
@@ -236,11 +255,14 @@ class BoxSizeDebugNode(Node):
         boxes = results.xyxy[0]  # [N, 6]: x1, y1, x2, y2, conf, cls
 
         if boxes is None or len(boxes) == 0:
+            self.get_logger().info("YOLO detections: 0")
             # detection 이 없어도 원본 이미지를 /detector/debug 로 publish
             self._publish_debug_image(
                 bgr=bgr,
             )
             return
+
+        self.get_logger().info(f"YOLO detections: {len(boxes)}")
 
         # 3) bbox + 크기 추정 + detect_box / detect_box_by_height
         img_h, img_w = bgr.shape[:2]
@@ -250,6 +272,16 @@ class BoxSizeDebugNode(Node):
             x1, y1, x2, y2, conf, cls_id = det.tolist()
             conf = float(conf)
             cls_id = int(cls_id)
+
+            # 클래스 이름 매핑
+            class_names = getattr(self, "class_names", {})
+            if isinstance(class_names, dict):
+                class_name = class_names.get(cls_id, str(cls_id))
+            else:
+                try:
+                    class_name = class_names[cls_id]
+                except Exception:
+                    class_name = str(cls_id)
 
             est_w, est_h = estimate_object_size_from_bbox(
                 bbox=det,
@@ -275,9 +307,9 @@ class BoxSizeDebugNode(Node):
                     fy=self.fy,
                 )
 
-            # 로그 출력
+            # 로그 출력 (클래스 이름 포함)
             self.get_logger().info(
-                f"[bbox] cls={cls_id} conf={conf:.3f} "
+                f"[bbox] class={class_name}(id={cls_id}) conf={conf:.3f} "
                 f"pix=({x1:.1f},{y1:.1f},{x2:.1f},{y2:.1f}) "
                 f"size_est=({est_w:.3f}m, {est_h:.3f}m) "
                 f"distance={distance_m:.3f}m "
@@ -297,6 +329,7 @@ class BoxSizeDebugNode(Node):
             cv2.rectangle(overlay, (x1_i, y1_i), (x2_i, y2_i), color, 2)
 
             label = (
+                f"{class_name} "
                 f"{'W/L' if self.width_mode else 'H'} "
                 f"{conf:.2f} "
                 f"{est_w:.2f}x{est_h:.2f}m"
@@ -317,6 +350,7 @@ class BoxSizeDebugNode(Node):
             bgr=overlay,
         )
 
+        # 이번 회차를 마지막 평가 시점으로 기록
         self.last_yolo_eval_time = now_sec
 
     # ------------------------------------------------------------------
