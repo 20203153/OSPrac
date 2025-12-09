@@ -32,12 +32,12 @@ from rclpy.node import Node
 from sensor_msgs.msg import Image, LaserScan, CameraInfo
 from cv_bridge import CvBridge, CvBridgeError
 
-from ..new_func.detect_func import (
+from new_func.detect_func import (
     detect_box,
     detect_box_by_height,
     estimate_object_size_from_bbox,
 )
-from ..new_func.yolov5_singleton import (
+from new_func.yolov5_singleton import (
     load_yolov5_model,
     run_yolov5_inference,
 )
