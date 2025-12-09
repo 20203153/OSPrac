@@ -33,6 +33,7 @@ install(PROGRAMS
   scripts/map_box_selector_node.py
   scripts/cv2_node.py
   scripts/yolo_node.py
+  scripts/box_size_debug_node.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

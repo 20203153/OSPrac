@@ -53,14 +53,13 @@ class BoxSizeDebugNode(Node):
         self.declare_parameter("model_path", "yolov5n.pt")
         self.declare_parameter("rgb_topic", "/oakd/rgb/preview/image_raw")
         self.declare_parameter("camera_info_topic", "/oakd/rgb/preview/camera_info")
-        self.declare_parameter("scan_topic", "/scan")
         # 최대 30Hz 정도 → 주기 ~0.033초
         self.declare_parameter("yolo_eval_min_interval_sec", 1.0 / 30.0)
         # width_mode=True  → width & length 기반 detect_box 사용
         # width_mode=False → height-only 기반 detect_box_by_height 사용
         self.declare_parameter("width_mode", True)
-        # LiDAR 거리 실패 시 fallback 값
-        self.declare_parameter("assumed_distance_m", 1.0)
+        # 박스까지의 거리 [m] (테스트 편의를 위해 파라미터로 지정, 기본 1.0m)
+        self.declare_parameter("distance_to_box_m", 1.0)
         # YOLO 입력 해상도
         self.declare_parameter("img_size", 640)
         # YOLO confidence threshold
@@ -79,9 +78,6 @@ class BoxSizeDebugNode(Node):
             .get_parameter_value()
             .string_value
         )
-        self.scan_topic = (
-            self.get_parameter("scan_topic").get_parameter_value().string_value
-        )
         self.yolo_eval_min_interval_sec = (
             self.get_parameter("yolo_eval_min_interval_sec")
             .get_parameter_value()
@@ -90,8 +86,10 @@ class BoxSizeDebugNode(Node):
         self.width_mode: bool = (
             self.get_parameter("width_mode").get_parameter_value().bool_value
         )
-        self.assumed_distance_m: float = (
-            self.get_parameter("assumed_distance_m").get_parameter_value().double_value
+        self.distance_to_box_m: float = (
+            self.get_parameter("distance_to_box_m")
+            .get_parameter_value()
+            .double_value
         )
         self.img_size: int = (
             self.get_parameter("img_size").get_parameter_value().integer_value
@@ -125,7 +123,6 @@ class BoxSizeDebugNode(Node):
         self.bridge = CvBridge()
         self.latest_rgb: Optional[np.ndarray] = None
         self.latest_rgb_header: Optional[Image] = None
-        self.latest_scan: Optional[LaserScan] = None
         self.fx: Optional[float] = None
         self.fy: Optional[float] = None
 
@@ -155,12 +152,6 @@ class BoxSizeDebugNode(Node):
             self.camera_info_callback,
             10,
         )
-        self.scan_sub = self.create_subscription(
-            LaserScan,
-            self.scan_topic,
-            self.scan_callback,
-            10,
-        )
 
         # ------------------------------------------------------------------
         # Timer: YOLO eval 주기 제한 (최대 30Hz)
@@ -175,8 +166,8 @@ class BoxSizeDebugNode(Node):
             f"  model_path={model_path}\n"
             f"  rgb_topic={self.rgb_topic}\n"
             f"  camera_info_topic={self.camera_info_topic}\n"
-            f"  scan_topic={self.scan_topic}\n"
             f"  width_mode={self.width_mode}\n"
+            f"  distance_to_box_m={self.distance_to_box_m}\n"
             f"  yolo_eval_min_interval_sec={self.yolo_eval_min_interval_sec}"
         )
 
@@ -204,10 +195,6 @@ class BoxSizeDebugNode(Node):
         except Exception as e:
             self.get_logger().warn(f"Failed to parse CameraInfo: {e}")
 
-    def scan_callback(self, msg: LaserScan) -> None:
-        """LiDAR 최신 스캔 저장."""
-        self.latest_scan = msg
-
     # ------------------------------------------------------------------
     # Timer: YOLO + detect_box / detect_box_by_height
     # ------------------------------------------------------------------
@@ -223,10 +210,8 @@ class BoxSizeDebugNode(Node):
             self.get_logger().debug("No CameraInfo yet (fx, fy); skip YOLO.")
             return
 
-        distance_m = self._estimate_distance_from_lidar()
-        if distance_m is None:
-            # LiDAR 값이 없을 경우 fallback 사용
-            distance_m = self.assumed_distance_m
+        # LiDAR 대신 파라미터 distance_to_box_m 를 그대로 사용
+        distance_m = self.distance_to_box_m
 
         # 2) YOLO 추론 (최신 프레임 사용)
         bgr = self.latest_rgb.copy()
@@ -327,27 +312,6 @@ class BoxSizeDebugNode(Node):
     # ------------------------------------------------------------------
     # Helper methods
     # ------------------------------------------------------------------
-
-    def _estimate_distance_from_lidar(self) -> Optional[float]:
-        """
-        LiDAR (/scan) 에서 탐지물체까지의 거리를 추정.
-
-        간단한 버전:
-        - 유한한 range 값들 중 최소값을 사용 (가장 가까운 물체까지의 거리)
-        - 더 정교하게 하려면 카메라 FOV 와 LiDAR angle_min/max 를 매핑해
-          bbox 중심 방향에 해당하는 빔 또는 근처 빔만 고려하도록 확장 가능.
-        """
-        if self.latest_scan is None:
-            return None
-
-        ranges = np.array(self.latest_scan.ranges, dtype=np.float32)
-        # 유효한 값만 필터링 (0 < r < inf)
-        valid = ranges[np.isfinite(ranges) & (ranges > 0.0)]
-
-        if valid.size == 0:
-            return None
-
-        return float(valid.min())
 
     def _publish_debug_image(
         self,
