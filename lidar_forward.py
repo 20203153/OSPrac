@@ -69,11 +69,9 @@ import cv2
 import numpy as np
 
 
-def _round_sig(x: float, sig: int = 3) -> float:
-    """유효 숫자(sig) 자리수까지만 남기도록 반올림."""
-    if x == 0.0:
-        return 0.0
-    return round(x, sig - int(math.floor(math.log10(abs(x)))) - 1)
+def _round_sig(x: float, digits: int = 2) -> float:
+    """소숫점 'digits' 자리까지 반올림."""
+    return round(x, digits)
 
 import rclpy
 from rclpy.node import Node
@@ -421,9 +419,9 @@ class LidarForwardNode(Node):
             self.base_distance_m - self.step_m * (len(self.records)), 0.0
         )
 
-        # LiDAR 기반 실제 거리값을 유효숫자 2자리로 반올림
+        # LiDAR 기반 실제 거리값을 소숫점 둘째 자리까지 반올림
         lidar_rounded = (
-            _round_sig(self.current_distance_m, sig=2)
+            _round_sig(self.current_distance_m, digits=2)
             if self.current_distance_m is not None
             else 0.0
         )
@@ -469,10 +467,13 @@ class LidarForwardNode(Node):
         LiDAR (/scan) 에서 **정면 방향** 물체까지의 거리를 추정.
 
         - angle_min, angle_increment 정보를 사용해 "정면 ± sector_half_deg" 범위만 사용
-        - 해당 sector 내 유효 range 들의 최소값을 전방 거리로 본다.
-        - sector 내 유효값이 없으면, 전체 유효값 중 최소값을 fallback 으로 사용.
+        - 해당 sector 내 유효 range 들의 **중앙값(median)** 을 전방 거리로 본다.
+          (min 대신 median 을 사용해, 0.1m 같은 outlier 로 인한 튀는 값을 완화)
+        - sector 내 유효값이 없으면, 전체 유효값 중 중앙값을 fallback 으로 사용.
         """
         ranges = np.array(scan.ranges, dtype=np.float32)
+
+        # 각도 배열 계산
         angles = np.arange(
             scan.angle_min,
             scan.angle_min + scan.angle_increment * len(ranges),
@@ -480,12 +481,11 @@ class LidarForwardNode(Node):
             dtype=np.float32,
         )
 
-        # 기본 sector: 정면(0 rad) 기준 ±10도
+        # 기본 sector: 정면(0 rad) 기준 ±10도 (필요하면 여기 값을 줄여 사용할 수 있음)
         sector_half_deg = 10.0
         sector_half_rad = math.radians(sector_half_deg)
 
-        # 정면(0rad) 인덱스 근처에서 ±sector_half_rad 범위 선택
-        # angle_min 이 0이 아닐 수 있으므로, 각도 배열 기준으로 필터링
+        # 유효한 거리만 필터링
         valid_mask = np.isfinite(ranges) & (ranges > 0.0)
 
         # 정면 근처 각도만 선택
@@ -493,14 +493,15 @@ class LidarForwardNode(Node):
         front_ranges = ranges[front_mask]
 
         if front_ranges.size > 0:
-            return float(front_ranges.min())
+            # 튀는 값(매우 짧은 거리 하나) 때문에 값이 급변하는 것을 막기 위해 중앙값 사용
+            return float(np.median(front_ranges))
 
-        # front sector 에 유효값이 없으면 전체 유효값 중 최소값 사용 (fallback)
+        # front sector 에 유효값이 없으면 전체 유효값 중 중앙값을 fallback 으로 사용
         all_valid = ranges[valid_mask]
         if all_valid.size == 0:
             return None
 
-        return float(all_valid.min())
+        return float(np.median(all_valid))
 
     def _forward(self) -> None:
         """로봇을 전진시키는 cmd_vel publish (단순 정속 전진)."""
@@ -547,3 +548,4 @@ def main(args=None) -> None:
 
 if __name__ == "__main__":
     main()
+
